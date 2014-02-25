@@ -26,19 +26,16 @@ interface HTMLSelectElement : HTMLElement {
   [Pure]
   readonly attribute DOMString type;
 
-  /*[Constant]
-    readonly attribute HTMLOptionsCollection options;*/
   [SetterThrows, Pure]
            attribute unsigned long length;
   getter Element? item(unsigned long index);
   HTMLOptionElement? namedItem(DOMString name);
-  /*[Throws]
-    void add((HTMLOptionElement or HTMLOptGroupElement) element, optional (HTMLElement or long)? before = null);*/
+  [Throws]
+    void add((HTMLOptionElement or HTMLOptGroupElement) element, optional (HTMLElement or long)? before = null);
   void remove(long index);
   [Throws]
   setter creator void (unsigned long index, HTMLOptionElement? option);
 
-// NYI:  readonly attribute HTMLCollection selectedOptions;
   [SetterThrows, Pure]
            attribute long selectedIndex;
   [Pure]
@@ -49,8 +46,6 @@ interface HTMLSelectElement : HTMLElement {
   readonly attribute DOMString validationMessage;
   boolean checkValidity();
   void setCustomValidity(DOMString error);
-
-// NYI:  readonly attribute NodeList labels;
 
   // https://www.w3.org/Bugs/Public/show_bug.cgi?id=20720
   void remove();

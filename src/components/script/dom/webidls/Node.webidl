@@ -3,16 +3,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * The origin of this IDL file is
- * http://www.w3.org/TR/2012/WD-dom-20120105/
- *
- * Copyright © 2012 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C
- * liability, trademark and document use rules apply.
+ * The origin of this IDL file is:
+ * http://dom.spec.whatwg.org/#interface-node
  */
-
-/*interface Principal;
-interface URI;
-interface UserDataHandler;*/
 
 interface Node : EventTarget {
   const unsigned short ELEMENT_NODE = 1;
@@ -69,7 +62,7 @@ interface Node : EventTarget {
 
   [Throws]
   Node cloneNode(optional boolean deep = true);
-  // boolean isEqualNode(Node? node); //XXXjdm we don't deal well with Node? parameters
+  boolean isEqualNode(Node? node);
 
   const unsigned short DOCUMENT_POSITION_DISCONNECTED = 0x01;
   const unsigned short DOCUMENT_POSITION_PRECEDING = 0x02;
@@ -78,7 +71,7 @@ interface Node : EventTarget {
   const unsigned short DOCUMENT_POSITION_CONTAINED_BY = 0x10;
   const unsigned short DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 0x20; // historical
   unsigned short compareDocumentPosition(Node other);
-  //boolean contains(Node? other); //XXXjdm we don't deal well with Node? parameters
+  boolean contains(Node? other);
 
   DOMString? lookupPrefix(DOMString? namespace);
   DOMString? lookupNamespaceURI(DOMString? prefix);
@@ -96,12 +89,4 @@ interface Node : EventTarget {
   readonly attribute DOMString? localName;
 
   boolean hasAttributes();
-  /*[Throws, Func="nsINode::IsChromeOrXBL"]
-  any setUserData(DOMString key, any data, UserDataHandler? handler);
-  [Throws, Func="nsINode::IsChromeOrXBL"]
-  any getUserData(DOMString key);*/
-  /*[ChromeOnly]
-  readonly attribute Principal nodePrincipal;
-  [ChromeOnly]
-  readonly attribute URI? baseURIObject;*/
 };

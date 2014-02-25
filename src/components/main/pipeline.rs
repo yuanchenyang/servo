@@ -7,7 +7,6 @@ use layout::layout_task::LayoutTask;
 
 use extra::url::Url;
 use geom::size::Size2D;
-use gfx::opts::Opts;
 use gfx::render_task::{PaintPermissionGranted, PaintPermissionRevoked};
 use gfx::render_task::{RenderChan, RenderTask};
 use layout::util::OpaqueNode;
@@ -15,10 +14,15 @@ use script::layout_interface::LayoutChan;
 use script::script_task::LoadMsg;
 use script::script_task::{AttachLayoutMsg, NewLayoutInfo, ScriptTask, ScriptChan};
 use script::script_task;
-use servo_msg::constellation_msg::{ConstellationChan, PipelineId, SubpageId};
+use servo_msg::constellation_msg::{ConstellationChan, Failure, PipelineId, SubpageId};
 use servo_net::image_cache_task::ImageCacheTask;
 use servo_net::resource_task::ResourceTask;
+use servo_util::opts::Opts;
 use servo_util::time::ProfilerChan;
+use std::cell::RefCell;
+//FIXME: switch to std::rc when we upgrade Rust
+use layers::temp_rc::Rc;
+//use std::rc::Rc;
 
 /// A uniquely-identifiable pipeline of script task, layout task, and render task. 
 pub struct Pipeline {
@@ -30,7 +34,7 @@ pub struct Pipeline {
     layout_shutdown_port: Port<()>,
     render_shutdown_port: Port<()>,
     /// The most recently loaded url
-    url: Option<Url>,
+    url: RefCell<Option<Url>>,
 }
 
 /// The subset of the pipeline that is needed for layer composition.
@@ -51,17 +55,23 @@ impl Pipeline {
                        image_cache_task: ImageCacheTask,
                        profiler_chan: ProfilerChan,
                        opts: Opts,
-                       script_pipeline: &Pipeline)
+                       script_pipeline: Rc<Pipeline>)
                        -> Pipeline {
         let (layout_port, layout_chan) = LayoutChan::new();
         let (render_port, render_chan) = RenderChan::new();
         let (render_shutdown_port, render_shutdown_chan) = Chan::new();
         let (layout_shutdown_port, layout_shutdown_chan) = Chan::new();
 
+        let failure = Failure {
+            pipeline_id: id,
+            subpage_id: subpage_id,
+        };
+
         RenderTask::create(id,
                            render_port,
                            compositor_chan.clone(),
                            constellation_chan.clone(),
+                           failure.clone(),
                            opts.clone(),
                            profiler_chan.clone(),
                            render_shutdown_chan);
@@ -70,7 +80,8 @@ impl Pipeline {
                            layout_port,
                            layout_chan.clone(),
                            constellation_chan,
-                           script_pipeline.script_chan.clone(),
+                           failure,
+                           script_pipeline.borrow().script_chan.clone(),
                            render_chan.clone(),
                            image_cache_task.clone(),
                            opts.clone(),
@@ -78,16 +89,16 @@ impl Pipeline {
                            layout_shutdown_chan);
 
         let new_layout_info = NewLayoutInfo {
-            old_id: script_pipeline.id.clone(),
+            old_id: script_pipeline.borrow().id.clone(),
             new_id: id,
             layout_chan: layout_chan.clone(),
         };
 
-        script_pipeline.script_chan.send(AttachLayoutMsg(new_layout_info));
+        script_pipeline.borrow().script_chan.send(AttachLayoutMsg(new_layout_info));
 
         Pipeline::new(id,
                       subpage_id,
-                      script_pipeline.script_chan.clone(),
+                      script_pipeline.borrow().script_chan.clone(),
                       layout_chan,
                       render_chan,
                       layout_shutdown_port,
@@ -117,7 +128,10 @@ impl Pipeline {
                                      layout_shutdown_port,
                                      render_shutdown_port);
 
-        // FIXME(#1434): add back failure supervision
+        let failure = Failure {
+            pipeline_id: id,
+            subpage_id: subpage_id,
+        };
 
         ScriptTask::create(id,
                            compositor_chan.clone(),
@@ -125,6 +139,7 @@ impl Pipeline {
                            script_port,
                            script_chan.clone(),
                            constellation_chan.clone(),
+                           failure.clone(),
                            resource_task,
                            image_cache_task.clone(),
                            window_size);
@@ -133,6 +148,7 @@ impl Pipeline {
                            render_port,
                            compositor_chan.clone(),
                            constellation_chan.clone(),
+                           failure.clone(),
                            opts.clone(),
                            profiler_chan.clone(),
                            render_shutdown_chan);
@@ -141,6 +157,7 @@ impl Pipeline {
                            layout_port,
                            layout_chan.clone(),
                            constellation_chan,
+                           failure,
                            script_chan.clone(),
                            render_chan.clone(),
                            image_cache_task,
@@ -167,12 +184,12 @@ impl Pipeline {
             render_chan: render_chan,
             layout_shutdown_port: layout_shutdown_port,
             render_shutdown_port: render_shutdown_port,
-            url: None,
+            url: RefCell::new(None),
         }
     }
 
-    pub fn load(&mut self, url: Url) {
-        self.url = Some(url.clone());
+    pub fn load(&self, url: Url) {
+        self.url.set(Some(url.clone()));
         self.script_chan.send(LoadMsg(self.id, url));
     }
 
@@ -182,23 +199,24 @@ impl Pipeline {
 
     pub fn revoke_paint_permission(&self) {
         debug!("pipeline revoking render channel paint permission");
-        self.render_chan.send(PaintPermissionRevoked);
+        self.render_chan.try_send(PaintPermissionRevoked);
     }
 
-    pub fn reload(&mut self) {
-        self.url.clone().map(|url| {
+    pub fn reload(&self) {
+        self.url.get().clone().map(|url| {
             self.load(url);
         });
     }
 
     pub fn exit(&self) {
         // Script task handles shutting down layout, and layout handles shutting down the renderer.
-        self.script_chan.try_send(script_task::ExitPipelineMsg(self.id));
-
-        // Wait until all slave tasks have terminated and run destructors
-        // NOTE: We don't wait for script task as we don't always own it
-        self.render_shutdown_port.recv_opt();
-        self.layout_shutdown_port.recv_opt();
+        // For now, if the script task has failed, we give up on clean shutdown.
+        if self.script_chan.try_send(script_task::ExitPipelineMsg(self.id)) {
+            // Wait until all slave tasks have terminated and run destructors
+            // NOTE: We don't wait for script task as we don't always own it
+            self.render_shutdown_port.recv_opt();
+            self.layout_shutdown_port.recv_opt();
+        }
     }
 
     pub fn to_sendable(&self) -> CompositionPipeline {

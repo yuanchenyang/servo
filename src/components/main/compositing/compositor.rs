@@ -11,7 +11,7 @@ use platform::{Application, Window};
 use windowing::{WindowEvent, WindowMethods,
                 WindowNavigateMsg,
                 IdleWindowEvent, RefreshWindowEvent, ResizeWindowEvent, LoadUrlWindowEvent,
-                MouseWindowEventClass,ScrollWindowEvent, ZoomWindowEvent, NavigationWindowEvent,
+                MouseWindowEventClass, MouseWindowMoveEventClass,ScrollWindowEvent, ZoomWindowEvent, NavigationWindowEvent,
                 FinishedWindowEvent, QuitWindowEvent,
                 MouseWindowEvent, MouseWindowClickEvent, MouseWindowMouseDownEvent, MouseWindowMouseUpEvent};
 
@@ -23,7 +23,6 @@ use geom::matrix::identity;
 use geom::point::Point2D;
 use geom::rect::Rect;
 use geom::size::Size2D;
-use gfx::opts::Opts;
 use layers::layers::{ContainerLayer, ContainerLayerKind};
 use layers::platform::surface::NativeCompositingGraphicsContext;
 use layers::rendergl;
@@ -34,16 +33,22 @@ use png;
 use servo_msg::compositor_msg::{Blank, Epoch, FinishedLoading, IdleRenderState, LayerBufferSet, ReadyState, RenderState};
 use servo_msg::constellation_msg::{ConstellationChan, ExitMsg, NavigateMsg, ResizedWindowMsg, LoadUrlMsg, PipelineId};
 use servo_msg::constellation_msg;
+use servo_util::opts::Opts;
 use servo_util::time::{profile, ProfilerChan, Timer};
 use servo_util::{time, url};
 use std::comm::Port;
 use std::num::Orderable;
 use std::path::Path;
 
+//FIXME: switch to std::rc when we upgrade Rust
+use layers::temp_rc::Rc;
+//use std::rc::Rc;
+
+use std::rc;
 
 pub struct IOCompositor {
     /// The application window.
-    window: @mut Window,
+    window: rc::Rc<Window>,
 
     /// The port on which we receive messages.
     port: Port<Msg>,
@@ -52,7 +57,7 @@ pub struct IOCompositor {
     context: RenderContext,
 
     /// The root ContainerLayer.
-    root_layer: @mut ContainerLayer,
+    root_layer: Rc<ContainerLayer>,
 
     /// The canvas to paint a page.
     scene: Scene,
@@ -115,21 +120,21 @@ impl IOCompositor {
                port: Port<Msg>,
                constellation_chan: ConstellationChan,
                profiler_chan: ProfilerChan) -> IOCompositor {
-        let window: @mut Window = WindowMethods::new(app);
+        let window: rc::Rc<Window> = WindowMethods::new(app);
 
         // Create an initial layer tree.
         //
         // TODO: There should be no initial layer tree until the renderer creates one from the display
         // list. This is only here because we don't have that logic in the renderer yet.
-        let root_layer = @mut ContainerLayer();
-        let window_size = window.size();
+        let root_layer = Rc::new(ContainerLayer());
+        let window_size = window.borrow().size();
 
         IOCompositor {
             window: window,
             port: port,
             opts: opts,
             context: rendergl::init_render_context(),
-            root_layer: root_layer,
+            root_layer: root_layer.clone(),
             scene: Scene(ContainerLayerKind(root_layer), window_size, identity()),
             window_size: Size2D(window_size.width as uint, window_size.height as uint),
             graphics_context: CompositorTask::create_graphics_context(),
@@ -181,7 +186,8 @@ impl IOCompositor {
             }
 
             // Check for messages coming from the windowing system.
-            self.handle_window_message(self.window.recv());
+            let msg = self.window.borrow().recv();
+            self.handle_window_message(msg);
 
             // If asked to recomposite and renderer has run at least once
             if self.recomposite && self.composite_ready {
@@ -231,7 +237,7 @@ impl IOCompositor {
                 }
 
                 (Some(ChangeReadyState(ready_state)), false) => {
-                    self.window.set_ready_state(ready_state);
+                    self.window.borrow().set_ready_state(ready_state);
                     self.ready_state = ready_state;
                 }
 
@@ -293,7 +299,7 @@ impl IOCompositor {
     }
 
     fn change_render_state(&mut self, render_state: RenderState) {
-        self.window.set_render_state(render_state);
+        self.window.borrow().set_render_state(render_state);
         if render_state == IdleRenderState {
             self.composite_ready = true;
         }
@@ -315,16 +321,22 @@ impl IOCompositor {
         response_chan.send(());
 
         // This assumes there is at most one child, which should be the case.
-        match self.root_layer.first_child {
-            Some(old_layer) => self.root_layer.remove_child(old_layer),
-            None => {}
+        // NOTE: work around borrowchk
+        {
+            let tmp = self.root_layer.borrow().first_child.borrow();
+            match *tmp.get() {
+                Some(ref old_layer) => ContainerLayer::remove_child(self.root_layer.clone(),
+                                                                     old_layer.clone()),
+                None => {}
+            }
         }
 
         let layer = CompositorLayer::from_frame_tree(frame_tree,
                                                      self.opts.tile_size,
                                                      Some(10000000u),
                                                      self.opts.cpu_painting);
-        self.root_layer.add_child_start(ContainerLayerKind(layer.root_layer));
+        ContainerLayer::add_child_start(self.root_layer.clone(),
+                                        ContainerLayerKind(layer.root_layer.clone()));
 
         // If there's already a root layer, destroy it cleanly.
         match self.compositor_layer {
@@ -335,7 +347,7 @@ impl IOCompositor {
         self.compositor_layer = Some(layer);
 
         // Initialize the new constellation channel by sending it the root window size.
-        let window_size = self.window.size();
+        let window_size = self.window.borrow().size();
         let window_size = Size2D(window_size.width as uint,
                                  window_size.height as uint);
         new_constellation_chan.send(ResizedWindowMsg(window_size));
@@ -358,13 +370,17 @@ impl IOCompositor {
                                              Some(10000000u),
                                              self.opts.cpu_painting);
 
-        let current_child = self.root_layer.first_child;
-        // This assumes there is at most one child, which should be the case.
-        match current_child {
-            Some(old_layer) => self.root_layer.remove_child(old_layer),
-            None => {}
+        {
+            let current_child = self.root_layer.borrow().first_child.borrow();
+            // This assumes there is at most one child, which should be the case.
+            match *current_child.get() {
+                Some(ref old_layer) => ContainerLayer::remove_child(self.root_layer.clone(),
+                                                                     old_layer.clone()),
+                None => {}
+            }
         }
-        self.root_layer.add_child_start(ContainerLayerKind(new_layer.root_layer));
+        ContainerLayer::add_child_start(self.root_layer.clone(),
+                                        ContainerLayerKind(new_layer.root_layer.clone()));
         self.compositor_layer = Some(new_layer);
 
         self.ask_for_tiles();
@@ -380,7 +396,7 @@ impl IOCompositor {
                 let world_zoom = self.world_zoom;
                 let page_window = Size2D(window_size.width as f32 / world_zoom,
                                          window_size.height as f32 / world_zoom);
-                assert!(layer.resize(id, new_size, page_window, epoch));
+                layer.resize(id, new_size, page_window, epoch);
                 let move = self.fragment_point.take().map_default(false, |point| layer.move(point, page_window));
 
                 (true, move)
@@ -515,6 +531,10 @@ impl IOCompositor {
                 self.on_mouse_window_event_class(mouse_window_event);
             }
 
+            MouseWindowMoveEventClass(cursor) => {
+                self.on_mouse_window_move_event_class(cursor);
+            }
+
             ScrollWindowEvent(delta, cursor) => {
                 self.on_scroll_window_event(delta, cursor);
             }
@@ -563,7 +583,7 @@ impl IOCompositor {
             None => fail!("Compositor: Received LoadUrlWindowEvent without initialized compositor layers"),
         };
 
-        let msg = LoadUrlMsg(root_pipeline_id, url::make_url(url_string.to_str(), None));
+        let msg = LoadUrlMsg(root_pipeline_id, url::parse_url(url_string, None));
         self.constellation_chan.send(msg);
     }
 
@@ -576,6 +596,12 @@ impl IOCompositor {
         };
         for layer in self.compositor_layer.iter() {
             layer.send_mouse_event(mouse_window_event, point);
+        }
+    }
+
+    fn on_mouse_window_move_event_class(&self, cursor: Point2D<f32>) {
+        for layer in self.compositor_layer.iter() {
+            layer.send_mouse_move_event(cursor);
         }
     }
 
@@ -605,7 +631,7 @@ impl IOCompositor {
         self.world_zoom = (self.world_zoom * magnification).max(&1.0);
         let world_zoom = self.world_zoom;
 
-        self.root_layer.common.set_transform(identity().scale(world_zoom, world_zoom, 1f32));
+        self.root_layer.borrow().common.with_mut(|common| common.set_transform(identity().scale(world_zoom, world_zoom, 1f32)));
 
         // Scroll as needed
         let page_delta = Point2D(window_size.width as f32 * (1.0 / world_zoom - 1.0 / old_world_zoom) * 0.5,
@@ -650,7 +676,7 @@ impl IOCompositor {
         profile(time::CompositingCategory, self.profiler_chan.clone(), || {
             debug!("compositor: compositing");
             // Adjust the layer dimensions as necessary to correspond to the size of the window.
-            self.scene.size = self.window.size();
+            self.scene.size = self.window.borrow().size();
             // Render the scene.
             match self.compositor_layer {
                 Some(ref mut layer) => {
@@ -699,7 +725,7 @@ impl IOCompositor {
             self.shutting_down = true;
         }
 
-        self.window.present();
+        self.window.borrow().present();
 
         let exit = self.opts.exit_after_load;
         if exit {

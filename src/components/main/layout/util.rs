@@ -8,17 +8,17 @@ use layout::parallel::DomParallelInfo;
 use layout::wrapper::{LayoutNode, TLayoutNode, ThreadSafeLayoutNode};
 
 use extra::arc::Arc;
+use script::dom::bindings::js::JS;
 use script::dom::bindings::utils::Reflectable;
-use script::dom::node::AbstractNode;
-use script::layout_interface::{LayoutChan, UntrustedNodeAddress};
+use script::dom::node::Node;
+use script::layout_interface::{LayoutChan, UntrustedNodeAddress, TrustedNodeAddress};
 use servo_util::range::Range;
-use servo_util::smallvec::{SmallVec0, SmallVec16};
 use std::cast;
 use std::cell::{Ref, RefMut};
 use std::iter::Enumerate;
 use std::libc::uintptr_t;
 use std::vec::VecIterator;
-use style::{ComputedValues, PropertyDeclaration};
+use style::ComputedValues;
 
 /// A range of nodes.
 pub struct NodeRange {
@@ -130,18 +130,13 @@ impl ElementMapping {
 
 /// Data that layout associates with a node.
 pub struct PrivateLayoutData {
-    /// The results of CSS matching for this node.
-    applicable_declarations: SmallVec16<Arc<~[PropertyDeclaration]>>,
-
-    before_applicable_declarations: SmallVec0<Arc<~[PropertyDeclaration]>>,
-
-    after_applicable_declarations: SmallVec0<Arc<~[PropertyDeclaration]>>,
-
     /// The results of CSS styling for this node.
-    before_style: Option<Arc<ComputedValues>>,
-
     style: Option<Arc<ComputedValues>>,
 
+    /// The results of CSS styling for this node's `before` pseudo-element, if any.
+    before_style: Option<Arc<ComputedValues>>,
+
+    /// The results of CSS styling for this node's `after` pseudo-element, if any.
     after_style: Option<Arc<ComputedValues>>,
 
     /// Description of how to account for recent style changes.
@@ -159,9 +154,6 @@ impl PrivateLayoutData {
     /// Creates new layout data.
     pub fn new() -> PrivateLayoutData {
         PrivateLayoutData {
-            applicable_declarations: SmallVec16::new(),
-            before_applicable_declarations: SmallVec0::new(),
-            after_applicable_declarations: SmallVec0::new(),
             before_style: None,
             style: None,
             after_style: None,
@@ -221,23 +213,28 @@ impl OpaqueNode {
     /// Converts a DOM node (layout view) to an `OpaqueNode`.
     pub fn from_layout_node(node: &LayoutNode) -> OpaqueNode {
         unsafe {
-            let abstract_node = node.get_abstract();
-            let ptr: uintptr_t = cast::transmute(abstract_node.reflector().get_jsobject());
-            OpaqueNode(ptr)
+            OpaqueNode::from_jsmanaged(node.get_jsmanaged())
         }
     }
 
     /// Converts a thread-safe DOM node (layout view) to an `OpaqueNode`.
     pub fn from_thread_safe_layout_node(node: &ThreadSafeLayoutNode) -> OpaqueNode {
         unsafe {
-            let abstract_node = node.get_abstract();
+            let abstract_node = node.get_jsmanaged();
             let ptr: uintptr_t = cast::transmute(abstract_node.reflector().get_jsobject());
             OpaqueNode(ptr)
         }
     }
 
     /// Converts a DOM node (script view) to an `OpaqueNode`.
-    pub fn from_script_node(node: &AbstractNode) -> OpaqueNode {
+    pub fn from_script_node(node: TrustedNodeAddress) -> OpaqueNode {
+        unsafe {
+            OpaqueNode::from_jsmanaged(&JS::from_trusted_node_address(node))
+        }
+    }
+
+    /// Converts a DOM node to an `OpaqueNode'.
+    fn from_jsmanaged(node: &JS<Node>) -> OpaqueNode {
         unsafe {
             let ptr: uintptr_t = cast::transmute(node.reflector().get_jsobject());
             OpaqueNode(ptr)

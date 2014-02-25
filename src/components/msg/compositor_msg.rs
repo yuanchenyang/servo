@@ -11,6 +11,8 @@ use layers::platform::surface::{NativeSurface, NativeSurfaceMethods};
 
 use constellation_msg::PipelineId;
 
+use extra::serialize::{Encoder, Encodable};
+
 pub struct LayerBuffer {
     /// The native surface which can be shared between threads or processes. On Mac this is an
     /// `IOSurface`; on Linux this is an X Pixmap; on Android this is an `EGLImageKHR`.
@@ -45,13 +47,13 @@ impl LayerBufferSet {
 }
 
 /// The status of the renderer.
-#[deriving(Eq)]
+#[deriving(Eq, Clone)]
 pub enum RenderState {
     IdleRenderState,
     RenderingRenderState,
 }
 
-#[deriving(Eq)]
+#[deriving(Eq, Clone)]
 pub enum ReadyState {
     /// Informs the compositor that nothing has been done yet. Used for setting status
     Blank,
@@ -92,6 +94,11 @@ pub trait ScriptListener : Clone {
     fn invalidate_rect(&self, PipelineId, Rect<uint>);
     fn scroll_fragment_point(&self, PipelineId, Point2D<f32>);
     fn close(&self);
+}
+
+impl<S: Encoder> Encodable<S> for @ScriptListener {
+    fn encode(&self, _s: &mut S) {
+    }
 }
 
 /// The interface used by the quadtree and buffer map to get info about layer buffers.

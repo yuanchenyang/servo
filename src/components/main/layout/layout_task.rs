@@ -5,56 +5,60 @@
 //! The layout task. Performs layout on the DOM, builds display lists and sends them to be
 /// rendered.
 
-use css::matching::MatchMethods;
+use css::matching::{ApplicableDeclarations, ApplicableDeclarationsCache, MatchMethods};
+use css::matching::{StyleSharingCandidateCache};
 use css::select::new_stylist;
 use css::node_style::StyledNode;
-use layout::construct::{FlowConstructionResult, FlowConstructor, NoConstructionResult};
+use layout::construct::{FlowConstructionResult, NoConstructionResult};
 use layout::context::LayoutContext;
 use layout::display_list_builder::{DisplayListBuilder, ToGfxColor};
-use layout::flow::{Flow, FlowLeafSet, ImmutableFlowUtils, MutableFlowUtils, MutableOwnedFlowUtils};
+use layout::flow::{Flow, ImmutableFlowUtils, MutableFlowUtils, MutableOwnedFlowUtils};
 use layout::flow::{PreorderFlowTraversal, PostorderFlowTraversal};
 use layout::flow;
 use layout::incremental::RestyleDamage;
-use layout::parallel::{AssignHeightsAndStoreOverflowTraversalKind, BubbleWidthsTraversalKind};
-use layout::parallel::{UnsafeFlow};
+use layout::parallel::PaddedUnsafeFlow;
 use layout::parallel;
 use layout::util::{LayoutDataAccess, OpaqueNode, LayoutDataWrapper};
-use layout::wrapper::{DomLeafSet, LayoutNode, TLayoutNode, ThreadSafeLayoutNode};
+use layout::wrapper::{LayoutNode, TLayoutNode, ThreadSafeLayoutNode};
 
+use extra::url::Url;
 use extra::arc::{Arc, MutexArc};
 use geom::rect::Rect;
 use geom::size::Size2D;
 use gfx::display_list::{ClipDisplayItemClass, DisplayItem, DisplayItemIterator};
 use gfx::display_list::{DisplayList, DisplayListCollection};
-use gfx::font_context::FontContextInfo;
-use gfx::opts::Opts;
+use gfx::font_context::{FontContext, FontContextInfo};
 use gfx::render_task::{RenderMsg, RenderChan, RenderLayer};
 use gfx::{render_task, color};
+use script::dom::bindings::js::JS;
 use script::dom::event::ReflowEvent;
-use script::dom::node::{ElementNodeTypeId, LayoutDataRef};
+use script::dom::node::{ElementNodeTypeId, LayoutDataRef, Node};
 use script::dom::element::{HTMLBodyElementTypeId, HTMLHtmlElementTypeId};
 use script::layout_interface::{AddStylesheetMsg, ContentBoxQuery};
 use script::layout_interface::{ContentBoxesQuery, ContentBoxesResponse, ExitNowMsg, LayoutQuery};
-use script::layout_interface::{HitTestQuery, ContentBoxResponse, HitTestResponse};
+use script::layout_interface::{HitTestQuery, ContentBoxResponse, HitTestResponse, MouseOverQuery, MouseOverResponse};
 use script::layout_interface::{ContentChangedDocumentDamage, LayoutChan, Msg, PrepareToExitMsg};
-use script::layout_interface::{QueryMsg, ReapLayoutDataMsg, Reflow, ReflowDocumentDamage};
+use script::layout_interface::{QueryMsg, ReapLayoutDataMsg, Reflow, UntrustedNodeAddress};
 use script::layout_interface::{ReflowForDisplay, ReflowMsg};
 use script::script_task::{ReflowCompleteMsg, ScriptChan, SendEventMsg};
-use servo_msg::constellation_msg::{ConstellationChan, PipelineId};
+use servo_msg::constellation_msg::{ConstellationChan, PipelineId, Failure, FailureMsg};
 use servo_net::image_cache_task::{ImageCacheTask, ImageResponseMsg};
 use servo_net::local_image_cache::{ImageResponder, LocalImageCache};
 use servo_util::geometry::Au;
+use servo_util::opts::Opts;
 use servo_util::time::{ProfilerChan, profile};
 use servo_util::time;
-use servo_util::task::spawn_named;
+use servo_util::task::send_on_failure;
 use servo_util::workqueue::WorkQueue;
 use std::cast::transmute;
 use std::cast;
 use std::cell::RefCell;
 use std::comm::Port;
 use std::ptr;
+use std::task;
 use std::util;
-use style::{AuthorOrigin, Stylesheet, Stylist};
+use style::{AuthorOrigin, ComputedValues, Stylesheet, Stylist};
+use style;
 
 use layout::libftl::PrintInfoTraversal;
 use layout::simple_test::layout;
@@ -85,12 +89,6 @@ pub struct LayoutTask {
     /// The local image cache.
     local_image_cache: MutexArc<LocalImageCache>,
 
-    /// The set of leaves in the DOM tree.
-    dom_leaf_set: Arc<DomLeafSet>,
-
-    /// The set of leaves in the flow tree.
-    flow_leaf_set: Arc<FlowLeafSet>,
-
     /// The size of the viewport.
     screen_size: Size2D<Au>,
 
@@ -99,8 +97,11 @@ pub struct LayoutTask {
 
     stylist: ~Stylist,
 
+    /// The initial set of CSS values.
+    initial_css_values: Arc<ComputedValues>,
+
     /// The workers that we use for parallel operation.
-    parallel_traversal: Option<WorkQueue<*mut LayoutContext,UnsafeFlow>>,
+    parallel_traversal: Option<WorkQueue<*mut LayoutContext,PaddedUnsafeFlow>>,
 
     /// The channel on which messages can be sent to the profiler.
     profiler_chan: ProfilerChan,
@@ -117,7 +118,7 @@ impl PostorderFlowTraversal for ComputeDamageTraversal {
     fn process(&mut self, flow: &mut Flow) -> bool {
         let mut damage = flow::base(flow).restyle_damage;
         for child in flow::child_iter(flow) {
-            damage.union_in_place(flow::base(*child).restyle_damage.propagate_up())
+            damage.union_in_place(flow::base(child).restyle_damage.propagate_up())
         }
         flow::mut_base(flow).restyle_damage = damage;
         true
@@ -142,7 +143,7 @@ impl PreorderFlowTraversal for PropagateDamageTraversal {
         let prop = flow::base(flow).restyle_damage.propagate_down();
         if prop.is_nonempty() {
             for kid_ctx in flow::child_iter(flow) {
-                flow::mut_base(*kid_ctx).restyle_damage.union_in_place(prop)
+                flow::mut_base(kid_ctx).restyle_damage.union_in_place(prop)
             }
         }
         true
@@ -190,12 +191,14 @@ impl<'a> PostorderFlowTraversal for BubbleWidthsTraversal<'a> {
 }
 
 /// The assign-widths traversal. In Gecko this corresponds to `Reflow`.
-struct AssignWidthsTraversal<'a>(&'a mut LayoutContext);
+pub struct AssignWidthsTraversal<'a> {
+    layout_context: &'a mut LayoutContext,
+}
 
 impl<'a> PreorderFlowTraversal for AssignWidthsTraversal<'a> {
     #[inline]
     fn process(&mut self, flow: &mut Flow) -> bool {
-        flow.assign_widths(**self);
+        flow.assign_widths(self.layout_context);
         true
     }
 }
@@ -231,7 +234,7 @@ impl ImageResponder for LayoutImageResponder {
         let id = self.id.clone();
         let script_chan = self.script_chan.clone();
         let f: proc(ImageResponseMsg) = proc(_) {
-            script_chan.send(SendEventMsg(id.clone(), ReflowEvent))
+            drop(script_chan.try_send(SendEventMsg(id.clone(), ReflowEvent)))
         };
         f
     }
@@ -243,13 +246,17 @@ impl LayoutTask {
                   port: Port<Msg>,
                   chan: LayoutChan,
                   constellation_chan: ConstellationChan,
+                  failure_msg: Failure,
                   script_chan: ScriptChan,
                   render_chan: RenderChan<OpaqueNode>,
                   img_cache_task: ImageCacheTask,
                   opts: Opts,
                   profiler_chan: ProfilerChan,
                   shutdown_chan: Chan<()>) {
-        spawn_named("LayoutTask", proc() {
+        let mut builder = task::task();
+        send_on_failure(&mut builder, FailureMsg(failure_msg), (*constellation_chan).clone());
+        builder.name("LayoutTask");
+        builder.spawn(proc() {
             { // Ensures layout task is destroyed before we send shutdown message
                 let mut layout = LayoutTask::new(id,
                                                  port,
@@ -295,11 +302,10 @@ impl LayoutTask {
             image_cache_task: image_cache_task.clone(),
             local_image_cache: local_image_cache,
             screen_size: screen_size,
-            dom_leaf_set: Arc::new(DomLeafSet::new()),
-            flow_leaf_set: Arc::new(FlowLeafSet::new()),
 
             display_list_collection: None,
             stylist: ~new_stylist(),
+            initial_css_values: Arc::new(style::initial_values()),
             parallel_traversal: parallel_traversal,
             profiler_chan: profiler_chan,
             opts: opts.clone()
@@ -314,7 +320,7 @@ impl LayoutTask {
     }
 
     // Create a layout context for use in building display lists, hit testing, &c.
-    fn build_layout_context(&self, reflow_root: &LayoutNode) -> LayoutContext {
+    fn build_layout_context(&self, reflow_root: &LayoutNode, url: &Url) -> LayoutContext {
         let font_context_info = FontContextInfo {
             backend: self.opts.render_backend,
             needs_font_list: true,
@@ -325,12 +331,13 @@ impl LayoutTask {
             image_cache: self.local_image_cache.clone(),
             screen_size: self.screen_size.clone(),
             constellation_chan: self.constellation_chan.clone(),
-            dom_leaf_set: self.dom_leaf_set.clone(),
-            flow_leaf_set: self.flow_leaf_set.clone(),
             layout_chan: self.chan.clone(),
             font_context_info: font_context_info,
             stylist: &*self.stylist,
+            initial_css_values: self.initial_css_values.clone(),
+            url: (*url).clone(),
             reflow_root: OpaqueNode::from_layout_node(reflow_root),
+            opts: self.opts.clone(),
         }
     }
 
@@ -382,6 +389,7 @@ impl LayoutTask {
                     }
                 }
                 ExitNowMsg => {
+                    debug!("layout task is exiting...");
                     self.exit_now();
                     break
                 }
@@ -403,7 +411,7 @@ impl LayoutTask {
             Some(ref mut traversal) => traversal.shutdown(),
         }
 
-        self.render_chan.send(render_task::ExitMsg(response_chan));
+        self.render_chan.send(render_task::ExitMsg(Some(response_chan)));
         response_port.recv()
     }
 
@@ -411,17 +419,8 @@ impl LayoutTask {
         self.stylist.add_stylesheet(sheet, AuthorOrigin)
     }
 
-    /// Builds the flow tree.
-    ///
-    /// This corresponds to the various `nsCSSFrameConstructor` methods in Gecko or
-    /// `createRendererIfNeeded` in WebKit. Note, however that in WebKit `createRendererIfNeeded`
-    /// is intertwined with selector matching, making it difficult to compare directly. It is
-    /// marked `#[inline(never)]` to aid benchmarking in sampling profilers.
-    #[inline(never)]
-    fn construct_flow_tree(&self, layout_context: &mut LayoutContext, node: LayoutNode) -> ~Flow {
-        let node = ThreadSafeLayoutNode::new(node);
-        node.traverse_postorder_mut(&mut FlowConstructor::init(layout_context));
-
+    /// Retrieves the flow tree root from the root node.
+    fn get_layout_root(&self, node: LayoutNode) -> ~Flow {
         let mut layout_data_ref = node.mutate_layout_data();
         let result = match *layout_data_ref.get() {
             Some(ref mut layout_data) => {
@@ -445,7 +444,7 @@ impl LayoutTask {
     fn solve_constraints(&mut self,
                          layout_root: &mut Flow,
                          layout_context: &mut LayoutContext) {
-        {
+        if layout_context.opts.bubble_widths_separately {
             let mut traversal = BubbleWidthsTraversal {
                 layout_context: layout_context,
             };
@@ -457,7 +456,12 @@ impl LayoutTask {
         // recompute them every time.
         // NOTE: this currently computes borders, so any pruning should separate that operation
         // out.
-        layout_root.traverse_preorder(&mut AssignWidthsTraversal(layout_context));
+        {
+            let mut traversal = AssignWidthsTraversal {
+                layout_context: layout_context,
+            };
+            layout_root.traverse_preorder(&mut traversal);
+        }
 
         // FIXME(pcwalton): Prune this pass as well.
         {
@@ -474,28 +478,24 @@ impl LayoutTask {
     /// benchmarked against those two. It is marked `#[inline(never)]` to aid profiling.
     #[inline(never)]
     fn solve_constraints_parallel(&mut self,
-                                  layout_root: &mut Flow,
+                                  layout_root: &mut ~Flow,
                                   layout_context: &mut LayoutContext) {
+        if layout_context.opts.bubble_widths_separately {
+            let mut traversal = BubbleWidthsTraversal {
+                layout_context: layout_context,
+            };
+            layout_root.traverse_postorder(&mut traversal);
+        }
+
         match self.parallel_traversal {
             None => fail!("solve_contraints_parallel() called with no parallel traversal ready"),
             Some(ref mut traversal) => {
-                parallel::traverse_flow_tree(BubbleWidthsTraversalKind,
-                                             &self.flow_leaf_set,
-                                             self.profiler_chan.clone(),
-                                             layout_context,
-                                             traversal);
-
                 // NOTE: this currently computes borders, so any pruning should separate that
                 // operation out.
-                // TODO(pcwalton): Run this in parallel as well. This will require a bit more work
-                // because this is a top-down traversal, unlike the others.
-                layout_root.traverse_preorder(&mut AssignWidthsTraversal(layout_context));
-
-                parallel::traverse_flow_tree(AssignHeightsAndStoreOverflowTraversalKind,
-                                             &self.flow_leaf_set,
-                                             self.profiler_chan.clone(),
-                                             layout_context,
-                                             traversal);
+                parallel::traverse_flow_tree_preorder(layout_root,
+                                                      self.profiler_chan.clone(),
+                                                      layout_context,
+                                                      traversal);
             }
         }
     }
@@ -516,8 +516,9 @@ impl LayoutTask {
     /// The high-level routine that performs layout tasks.
     fn handle_reflow(&mut self, data: &Reflow) {
         // FIXME: Isolate this transmutation into a "bridge" module.
-        let node: &LayoutNode = unsafe {
-            transmute(&data.document_root)
+        let node: &mut LayoutNode = unsafe {
+            let mut node: JS<Node> = JS::from_trusted_node_address(data.document_root);
+            transmute(&mut node)
         };
 
         debug!("layout: received layout request for: {:s}", data.url.to_str());
@@ -547,36 +548,41 @@ impl LayoutTask {
         self.screen_size = current_screen_size;
 
         // Create a layout context for use throughout the following passes.
-        let mut layout_ctx = self.build_layout_context(node);
+        let mut layout_ctx = self.build_layout_context(node, &data.url);
+
+        // Create a font context, if this is sequential.
+        //
+        // FIXME(pcwalton): This is a pretty bogus thing to do. Essentially this is a workaround
+        // for libgreen having slow TLS.
+        let mut font_context_opt = if self.parallel_traversal.is_none() {
+            Some(~FontContext::new(layout_ctx.font_context_info.clone()))
+        } else {
+            None
+        };
 
         let mut layout_root = profile(time::LayoutStyleRecalcCategory,
                                       self.profiler_chan.clone(),
                                       || {
-            // Perform CSS selector matching if necessary.
-            match data.damage.level {
-                ReflowDocumentDamage => {}
-                _ => {
-                    profile(time::LayoutSelectorMatchCategory, self.profiler_chan.clone(), || {
-                        match self.parallel_traversal {
-                            None => {
-                                node.match_and_cascade_subtree(self.stylist,
-                                                               &layout_ctx.layout_chan,
-                                                               None)
-                            }
-                            Some(ref mut traversal) => {
-                                parallel::match_and_cascade_subtree(node,
-                                                                    &mut layout_ctx,
-                                                                    traversal)
-                            }
-                        }
-                    })
+            // Perform CSS selector matching and flow construction.
+            match self.parallel_traversal {
+                None => {
+                    let mut applicable_declarations = ApplicableDeclarations::new();
+                    let mut applicable_declarations_cache = ApplicableDeclarationsCache::new();
+                    let mut style_sharing_candidate_cache = StyleSharingCandidateCache::new();
+                    drop(node.recalc_style_for_subtree(self.stylist,
+                                                       &mut layout_ctx,
+                                                       font_context_opt.take_unwrap(),
+                                                       &mut applicable_declarations,
+                                                       &mut applicable_declarations_cache,
+                                                       &mut style_sharing_candidate_cache,
+                                                       None))
+                }
+                Some(ref mut traversal) => {
+                    parallel::recalc_style_for_subtree(node, &mut layout_ctx, traversal)
                 }
             }
 
-            // Construct the flow tree.
-            profile(time::LayoutTreeBuilderCategory,
-                    self.profiler_chan.clone(),
-                    || self.construct_flow_tree(&mut layout_ctx, *node))
+            self.get_layout_root((*node).clone())
         });
 
         // Verification of the flow tree, which ensures that all nodes were either marked as leaves
@@ -608,7 +614,7 @@ impl LayoutTask {
                 }
                 Some(_) => {
                     // Parallel mode.
-                    self.solve_constraints_parallel(layout_root, &mut layout_ctx)
+                    self.solve_constraints_parallel(&mut layout_root, &mut layout_ctx)
                 }
             }
         });
@@ -624,7 +630,7 @@ impl LayoutTask {
                 let display_list_builder = DisplayListBuilder {
                     ctx: &layout_ctx,
                 };
-                layout_root.build_display_lists(&display_list_builder, &dirty, 0u, display_list_collection);
+                layout_root.build_display_lists(&display_list_builder, &root_size, &dirty, 0u, display_list_collection);
 
                 let display_list_collection = Arc::new(display_list_collection.unwrap());
 
@@ -634,12 +640,13 @@ impl LayoutTask {
                     if child.type_id() == ElementNodeTypeId(HTMLHtmlElementTypeId) || 
                             child.type_id() == ElementNodeTypeId(HTMLBodyElementTypeId) {
                         let element_bg_color = {
-                            let thread_safe_child = ThreadSafeLayoutNode::new(child);
+                            let thread_safe_child = ThreadSafeLayoutNode::new(&child);
                             thread_safe_child.style()
                                              .get()
                                              .resolve_color(thread_safe_child.style()
                                                                              .get()
                                                                              .Background
+                                                                             .get()
                                                                              .background_color)
                                              .to_gfx_color()
                         };
@@ -668,7 +675,7 @@ impl LayoutTask {
             });
         }
 
-        layout_root.destroy(self.flow_leaf_set.get());
+        layout_root.destroy();
 
         // Tell script that we're done.
         //
@@ -685,7 +692,7 @@ impl LayoutTask {
             // The neat thing here is that in order to answer the following two queries we only
             // need to compare nodes for equality. Thus we can safely work only with `OpaqueNode`.
             ContentBoxQuery(node, reply_chan) => {
-                let node = OpaqueNode::from_script_node(&node);
+                let node = OpaqueNode::from_script_node(node);
 
                 fn union_boxes_for_node<'a>(
                                         accumulator: &mut Option<Rect<Au>>,
@@ -709,7 +716,7 @@ impl LayoutTask {
                 reply_chan.send(ContentBoxResponse(rect.unwrap_or(Au::zero_rect())))
             }
             ContentBoxesQuery(node, reply_chan) => {
-                let node = OpaqueNode::from_script_node(&node);
+                let node = OpaqueNode::from_script_node(node);
 
                 fn add_boxes_for_node<'a>(
                                       accumulator: &mut ~[Rect<Au>],
@@ -762,7 +769,6 @@ impl LayoutTask {
                                                             .to_untrusted_node_address()))
                         }
                     }
-
                     let ret: Option<HitTestResponse> = None;
                     ret
                 }
@@ -777,6 +783,46 @@ impl LayoutTask {
                 }
                 reply_chan.send(Err(()));
 
+            }
+            MouseOverQuery(_, point, reply_chan) => {
+                fn mouse_over_test(x: Au, y: Au, list: &[DisplayItem<OpaqueNode>], result: &mut ~[UntrustedNodeAddress]) {
+                    for item in list.rev_iter() {
+                        match *item {
+                            ClipDisplayItemClass(ref cc) => {
+                                mouse_over_test(x, y, cc.child_list, result);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    for item in list.rev_iter() {
+                        let bounds = item.bounds();
+
+                        // TODO(tikue): This check should really be performed by a method of
+                        // DisplayItem.
+                        if x < bounds.origin.x + bounds.size.width &&
+                                bounds.origin.x <= x &&
+                                y < bounds.origin.y + bounds.size.height &&
+                                bounds.origin.y <= y {
+                            result.push(item.base()
+                                            .extra
+                                            .to_untrusted_node_address());
+                        }
+                    }
+                }
+
+                let mut mouse_over_list:~[UntrustedNodeAddress] = ~[];
+                for display_list in self.display_list_collection.as_ref().unwrap().get().lists.rev_iter() {
+                    let (x, y) = (Au::from_frac_px(point.x as f64),
+                                  Au::from_frac_px(point.y as f64));
+                    mouse_over_test(x,y,display_list.list, &mut mouse_over_list);
+                }
+
+                if mouse_over_list.is_empty() {
+                    reply_chan.send(Err(()));
+                } else {
+                    reply_chan.send(Ok(MouseOverResponse(mouse_over_list)));
+                }
             }
         }
     }

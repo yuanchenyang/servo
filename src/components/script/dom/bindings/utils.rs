@@ -4,14 +4,17 @@
 
 use dom::bindings::codegen::PrototypeList;
 use dom::bindings::codegen::PrototypeList::MAX_PROTO_CHAIN_LENGTH;
+use dom::bindings::js::JS;
 use dom::window;
+use servo_util::str::DOMString;
 
 use std::libc::c_uint;
 use std::cast;
+use std::cmp::Eq;
 use std::hashmap::HashMap;
 use std::libc;
 use std::ptr;
-use std::ptr::{null, to_unsafe_ptr};
+use std::ptr::null;
 use std::str;
 use std::vec;
 use std::unstable::raw::Box;
@@ -31,7 +34,7 @@ use js::jsapi::{JSContext, JSObject, JSBool, jsid, JSClass, JSNative, JSTracer};
 use js::jsapi::{JSFunctionSpec, JSPropertySpec, JSVal, JSPropertyDescriptor};
 use js::jsapi::{JS_NewGlobalObject, JS_InitStandardClasses};
 use js::jsapi::{JSString, JS_CallTracer, JSTRACE_OBJECT};
-use js::jsapi::{JS_IsExceptionPending};
+use js::jsapi::{JS_IsExceptionPending, JS_AllowGC, JS_InhibitGC};
 use js::jsfriendapi::bindgen::JS_NewObjectWithUniqueType;
 use js::{JSPROP_ENUMERATE, JSVAL_NULL, JSCLASS_IS_GLOBAL, JSCLASS_IS_DOMJSCLASS};
 use js::{JSPROP_PERMANENT, JSID_VOID, JSPROP_NATIVE_ACCESSORS, JSPROP_GETTER};
@@ -108,35 +111,10 @@ extern fn InterfaceObjectToString(cx: *JSContext, _argc: c_uint, vp: *mut JSVal)
     let v = *GetFunctionNativeReserved(callee, TOSTRING_NAME_RESERVED_SLOT);
     assert!(jsval::is_string(v));
     let name = jsstring_to_str(cx, jsval::to_string(v));
-    let retval = Some(~"function " + name + "() {\n    [native code]\n}");
-    *vp = domstring_to_jsval(cx, retval);
+    let retval = ~"function " + name + "() {\n    [native code]\n}";
+    *vp = str_to_jsval(cx, retval);
     return 1;
   }
-}
-
-pub type DOMString = ~str;
-
-pub fn null_str_as_empty(s: &Option<DOMString>) -> ~str {
-    // We don't use map_default because it would allocate ~"" even for Some.
-    match *s {
-        Some(ref s) => s.clone(),
-        None => ~""
-    }
-}
-
-pub fn null_str_as_empty_ref<'a>(s: &'a Option<DOMString>) -> &'a str {
-    match *s {
-        Some(ref s) => s.as_slice(),
-        None => &'a ""
-    }
-}
-
-pub fn null_str_as_word_null(s: &Option<DOMString>) -> ~str {
-    // We don't use map_default because it would allocate ~"null" even for Some.
-    match *s {
-        Some(ref s) => s.clone(),
-        None => ~"null"
-    }
 }
 
 fn is_dom_class(clasp: *JSClass) -> bool {
@@ -198,6 +176,17 @@ pub fn unwrap_object<T>(obj: *JSObject, proto_id: PrototypeList::id::ID, proto_d
     }
 }
 
+pub fn unwrap_jsmanaged<T: Reflectable>(obj: *JSObject,
+                                        proto_id: PrototypeList::id::ID,
+                                        proto_depth: uint) -> Result<JS<T>, ()> {
+    let result: Result<*mut Box<T>, ()> = unwrap_object(obj, proto_id, proto_depth);
+    result.map(|unwrapped| {
+        unsafe {
+            JS::from_box(unwrapped)
+        }
+    })
+}
+
 pub fn unwrap_value<T>(val: *JSVal, proto_id: PrototypeList::id::ID, proto_depth: uint) -> Result<T, ()> {
     unsafe {
         let obj = RUST_JSVAL_TO_OBJECT(*val);
@@ -206,11 +195,14 @@ pub fn unwrap_value<T>(val: *JSVal, proto_id: PrototypeList::id::ID, proto_depth
 }
 
 pub unsafe fn squirrel_away<T>(x: @mut T) -> *Box<T> {
-    let y: *Box<T> = cast::transmute(x);
-    y
+    cast::transmute(x)
 }
 
-pub fn jsstring_to_str(cx: *JSContext, s: *JSString) -> ~str {
+pub unsafe fn squirrel_away_unique<T>(x: ~T) -> *Box<T> {
+    cast::transmute(x)
+}
+
+pub fn jsstring_to_str(cx: *JSContext, s: *JSString) -> DOMString {
     unsafe {
         let length = 0;
         let chars = JS_GetStringCharsAndLength(cx, s, &length);
@@ -220,7 +212,7 @@ pub fn jsstring_to_str(cx: *JSContext, s: *JSString) -> ~str {
     }
 }
 
-pub fn jsid_to_str(cx: *JSContext, id: jsid) -> ~str {
+pub fn jsid_to_str(cx: *JSContext, id: jsid) -> DOMString {
     unsafe {
         assert!(RUST_JSID_IS_STRING(id) != 0);
         jsstring_to_str(cx, RUST_JSID_TO_STRING(id))
@@ -234,7 +226,7 @@ pub enum StringificationBehavior {
 }
 
 pub fn jsval_to_str(cx: *JSContext, v: JSVal,
-                    nullBehavior: StringificationBehavior) -> Result<~str, ()> {
+                    nullBehavior: StringificationBehavior) -> Result<DOMString, ()> {
     if jsval::is_null(v) && nullBehavior == Empty {
         Ok(~"")
     } else {
@@ -581,10 +573,6 @@ pub fn trace_reflector(tracer: *mut JSTracer, description: &str, reflector: &Ref
     }
 }
 
-pub fn trace_option<T: Reflectable>(tracer: *mut JSTracer, description: &str, option: Option<@mut T>) {
-    option.map(|some| trace_reflector(tracer, description, some.reflector()));
-}
-
 pub fn initialize_global(global: *JSObject) {
     let protoArray = @mut ([0 as *JSObject, ..PrototypeList::id::_ID_Count as uint]);
     unsafe {
@@ -603,24 +591,21 @@ pub trait Reflectable {
 }
 
 pub fn reflect_dom_object<T: Reflectable>
-        (obj:     @mut T,
+        (obj:     ~T,
          window:  &window::Window,
-         wrap_fn: extern "Rust" fn(*JSContext, *JSObject, @mut T) -> *JSObject)
-         ->       @mut T {
-    let cx = window.get_cx();
-    let scope = window.reflector().get_jsobject();
-    if wrap_fn(cx, scope, obj).is_null() {
-        fail!("Could not eagerly wrap object");
-    }
-    assert!(obj.reflector().get_jsobject().is_not_null());
-    obj
+         wrap_fn: extern "Rust" fn(*JSContext, *JSObject, ~T) -> *JSObject)
+         ->       JS<T> {
+    JS::new(obj, window, wrap_fn)
 }
 
+#[deriving(Eq)]
 pub struct Reflector {
-    object: *JSObject
+    object: *JSObject,
+    force_box_layout: @int,
 }
 
 impl Reflector {
+    #[inline]
     pub fn get_jsobject(&self) -> *JSObject {
         self.object
     }
@@ -631,13 +616,10 @@ impl Reflector {
         self.object = object;
     }
 
-    pub fn get_rootable(&self) -> **JSObject {
-        return to_unsafe_ptr(&self.object);
-    }
-
     pub fn new() -> Reflector {
         Reflector {
-            object: ptr::null()
+            object: ptr::null(),
+            force_box_layout: @1,
         }
     }
 }
@@ -876,11 +858,11 @@ fn cx_for_dom_reflector(obj: *JSObject) -> *JSContext {
 }
 
 /// Returns the global object of the realm that the given DOM object was created in.
-pub fn global_object_for_dom_object<T: Reflectable>(obj: &mut T) -> *Box<window::Window> {
+pub fn global_object_for_dom_object<T: Reflectable>(obj: &T) -> *Box<window::Window> {
     global_object_for_js_object(obj.reflector().get_jsobject())
 }
 
-pub fn cx_for_dom_object<T: Reflectable>(obj: &mut T) -> *JSContext {
+pub fn cx_for_dom_object<T: Reflectable>(obj: &T) -> *JSContext {
     cx_for_dom_reflector(obj.reflector().get_jsobject())
 }
 
@@ -895,6 +877,35 @@ pub fn throw_method_failed_with_details<T>(cx: *JSContext,
         unsafe { ReportError(cx, string) };
     });
     return 0;
+}
+
+pub fn throw_not_in_union(cx: *JSContext, names: &'static str) -> JSBool {
+    assert!(unsafe { JS_IsExceptionPending(cx) } == 0);
+    let message = format!("argument could not be converted to any of: {}", names);
+    message.with_c_str(|string| {
+        unsafe { ReportError(cx, string) };
+    });
+    return 0;
+}
+
+/// Execute arbitrary code with the JS GC enabled, then disable it afterwards.
+pub fn with_gc_enabled<R>(cx: *JSContext, f: || -> R) -> R {
+    unsafe {
+        JS_AllowGC(cx);
+        let rv = f();
+        JS_InhibitGC(cx);
+        rv
+    }
+}
+
+/// Execute arbitrary code with the JS GC disabled, then enable it afterwards.
+pub fn with_gc_disabled<R>(cx: *JSContext, f: || -> R) -> R {
+    unsafe {
+        JS_InhibitGC(cx);
+        let rv = f();
+        JS_AllowGC(cx);
+        rv
+    }
 }
 
 /// Check if an element name is valid. See http://www.w3.org/TR/xml/#NT-Name

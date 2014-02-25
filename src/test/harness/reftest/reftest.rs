@@ -71,6 +71,11 @@ fn parse_lists(filenames: &[~str]) -> ~[TestDescAndFn] {
         };
 
         for line in contents.lines() {
+            // ignore comments
+            if line.starts_with("#") {
+                continue;
+            }
+
             let parts: ~[&str] = line.split(' ').filter(|p| !p.is_empty()).collect();
 
             if parts.len() != 3 {
@@ -80,7 +85,6 @@ fn parse_lists(filenames: &[~str]) -> ~[TestDescAndFn] {
             let kind = match parts[0] {
                 "==" => Same,
                 "!=" => Different,
-                "#" => continue,
                 _ => fail!("reftest line: '{:s}' has invalid kind '{:s}'",
                            line, parts[0])
             };
@@ -123,12 +127,12 @@ fn check_reftest(reftest: Reftest) {
     let left_filename = format!("/tmp/servo-reftest-{:06u}-left.png", reftest.id);
     let right_filename = format!("/tmp/servo-reftest-{:06u}-right.png", reftest.id);
 
-    let args = ~[~"-o", left_filename.clone(), reftest.left.clone()];
+    let args = ~[~"-f", ~"-o", left_filename.clone(), reftest.left.clone()];
     let mut process = Process::new("./servo", args, ProcessOptions::new()).unwrap();
     let retval = process.finish();
     assert!(retval == ExitStatus(0));
 
-    let args = ~[~"-o", right_filename.clone(), reftest.right.clone()];
+    let args = ~[~"-f", ~"-o", right_filename.clone(), reftest.right.clone()];
     let mut process = Process::new("./servo", args, ProcessOptions::new()).unwrap();
     let retval = process.finish();
     assert!(retval == ExitStatus(0));

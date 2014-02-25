@@ -9,9 +9,9 @@ use layout::context::LayoutContext;
 use layout::display_list_builder::{DisplayListBuilder, ExtraDisplayListData};
 use layout::flow::{BaseFlow, FlowClass, Flow, InlineFlowClass};
 use layout::flow;
-use layout::float_context::FloatContext;
+use layout::float_context::{FloatContext, FloatLeft, PlacementInfo};
 use layout::util::ElementMapping;
-use layout::float_context::{PlacementInfo, FloatLeft};
+use layout::wrapper::ThreadSafeLayoutNode;
 
 use extra::container::Deque;
 use extra::ringbuf::RingBuf;
@@ -84,8 +84,8 @@ impl LineboxScanner {
         self.floats.clone()
     }
 
-    fn reset_scanner(&mut self, flow: &mut InlineFlow) {
-        debug!("Resetting line box scanner's state for flow f{:d}.", flow.base.id);
+    fn reset_scanner(&mut self) {
+        debug!("Resetting line box scanner's state for flow.");
         self.lines = ~[];
         self.new_boxes = ~[];
         self.cur_y = Au::new(0);
@@ -99,7 +99,7 @@ impl LineboxScanner {
     }
 
     pub fn scan_for_lines(&mut self, flow: &mut InlineFlow) {
-        self.reset_scanner(flow);
+        self.reset_scanner();
 
         loop {
             // acquire the next box to lay out from work list or box list
@@ -142,9 +142,8 @@ impl LineboxScanner {
     }
 
     fn swap_out_results(&mut self, flow: &mut InlineFlow) {
-        debug!("LineboxScanner: Propagating scanned lines[n={:u}] to inline flow f{:d}",
-               self.lines.len(),
-               flow.base.id);
+        debug!("LineboxScanner: Propagating scanned lines[n={:u}] to inline flow",
+               self.lines.len());
 
         util::swap(&mut flow.boxes, &mut self.new_boxes);
         util::swap(&mut flow.lines, &mut self.lines);
@@ -179,7 +178,7 @@ impl LineboxScanner {
                               -> (Rect<Au>, Au) {
         debug!("LineboxScanner: Trying to place first box of line {}", self.lines.len());
 
-        let first_box_size = first_box.position.get().size;
+        let first_box_size = first_box.border_box.get().size;
         let splittable = first_box.can_split();
         debug!("LineboxScanner: box size: {}, splittable: {}", first_box_size, splittable);
         let line_is_empty: bool = self.pending_line.range.length() == 0;
@@ -234,9 +233,9 @@ impl LineboxScanner {
 
                 debug!("LineboxScanner: case=box split and fit");
                 let actual_box_width = match (left, right) {
-                    (Some(l_box), Some(_))  => l_box.position.get().size.width,
-                    (Some(l_box), None)     => l_box.position.get().size.width,
-                    (None, Some(r_box))     => r_box.position.get().size.width,
+                    (Some(l_box), Some(_))  => l_box.border_box.get().size.width,
+                    (Some(l_box), None)     => l_box.border_box.get().size.width,
+                    (None, Some(r_box))     => r_box.border_box.get().size.width,
                     (None, None)            => fail!("This case makes no sense.")
                 };
                 return (line_bounds, actual_box_width);
@@ -248,9 +247,9 @@ impl LineboxScanner {
 
                 debug!("LineboxScanner: case=box split and fit didn't fit; trying to push it down");
                 let actual_box_width = match (left, right) {
-                    (Some(l_box), Some(_))  => l_box.position.get().size.width,
-                    (Some(l_box), None)     => l_box.position.get().size.width,
-                    (None, Some(r_box))     => r_box.position.get().size.width,
+                    (Some(l_box), Some(_))  => l_box.border_box.get().size.width,
+                    (Some(l_box), None)     => l_box.border_box.get().size.width,
+                    (None, Some(r_box))     => r_box.border_box.get().size.width,
                     (None, None)            => fail!("This case makes no sense.")
                 };
 
@@ -349,7 +348,7 @@ impl LineboxScanner {
         debug!("LineboxScanner: Trying to append box to line {:u} (box size: {}, green zone: \
                 {}): {:s}",
                self.lines.len(),
-               in_box.position.get().size,
+               in_box.border_box.get().size,
                self.pending_line.green_zone,
                in_box.debug_str());
 
@@ -369,7 +368,7 @@ impl LineboxScanner {
         // horizontally. We'll try to place the whole box on this line and break somewhere if it
         // doesn't fit.
 
-        let new_width = self.pending_line.bounds.size.width + in_box.position.get().size.width;
+        let new_width = self.pending_line.bounds.size.width + in_box.border_box.get().size.width;
         if new_width <= green_zone.width {
             debug!("LineboxScanner: case=box fits without splitting");
             self.push_box_to_line(in_box);
@@ -440,9 +439,9 @@ impl LineboxScanner {
         }
         self.pending_line.range.extend_by(1);
         self.pending_line.bounds.size.width = self.pending_line.bounds.size.width +
-            box_.position.get().size.width;
+            box_.border_box.get().size.width;
         self.pending_line.bounds.size.height = Au::max(self.pending_line.bounds.size.height,
-                                                       box_.position.get().size.height);
+                                                       box_.border_box.get().size.height);
         self.new_boxes.push(box_);
     }
 }
@@ -466,18 +465,9 @@ pub struct InlineFlow {
 }
 
 impl InlineFlow {
-    pub fn new(base: BaseFlow) -> InlineFlow {
+    pub fn from_boxes(node: ThreadSafeLayoutNode, boxes: ~[Box]) -> InlineFlow {
         InlineFlow {
-            base: base,
-            boxes: ~[],
-            lines: ~[],
-            elems: ElementMapping::new(),
-        }
-    }
-
-    pub fn from_boxes(base: BaseFlow, boxes: ~[Box]) -> InlineFlow {
-        InlineFlow {
-            base: base,
+            base: BaseFlow::new(node),
             boxes: boxes,
             lines: ~[],
             elems: ElementMapping::new(),
@@ -494,6 +484,7 @@ impl InlineFlow {
     pub fn build_display_list_inline<E:ExtraDisplayListData>(
                                      &self,
                                      builder: &DisplayListBuilder,
+                                     container_block_size: &Size2D<Au>,
                                      dirty: &Rect<Au>,
                                      index: uint,
                                      lists: &RefCell<DisplayListCollection<E>>)
@@ -505,12 +496,11 @@ impl InlineFlow {
 
         // TODO(#228): Once we form line boxes and have their cached bounds, we can be smarter and
         // not recurse on a line if nothing in it can intersect the dirty region.
-        debug!("Flow[{:d}]: building display list for {:u} inline boxes",
-               self.base.id,
-               self.boxes.len());
+        debug!("Flow: building display list for {:u} inline boxes", self.boxes.len());
 
         for box_ in self.boxes.iter() {
-            box_.build_display_list(builder, dirty, self.base.abs_position, (&*self) as &Flow, index, lists);
+            let rel_offset: Point2D<Au> = box_.relative_position(container_block_size);
+            box_.build_display_list(builder, dirty, self.base.abs_position + rel_offset, (&*self) as &Flow, index, lists);
         }
 
         // TODO(#225): Should `inline-block` elements have flows as children of the inline flow or
@@ -610,8 +600,8 @@ impl InlineFlow {
 
         for i in line.range.eachi() {
             let box_ = &boxes[i];
-            let size = box_.position.get().size;
-            box_.position.set(Rect(Point2D(offset_x, box_.position.get().origin.y), size));
+            let size = box_.border_box.get().size;
+            box_.border_box.set(Rect(Point2D(offset_x, box_.border_box.get().origin.y), size));
             offset_x = offset_x + size.width;
         }
     }
@@ -634,7 +624,7 @@ impl Flow for InlineFlow {
         let mut num_floats = 0;
 
         for kid in self.base.child_iter() {
-            let child_base = flow::mut_base(*kid);
+            let child_base = flow::mut_base(kid);
             num_floats += child_base.num_floats;
             child_base.floats_in = FloatContext::new(child_base.num_floats);
         }
@@ -643,7 +633,7 @@ impl Flow for InlineFlow {
         let mut pref_width = Au::new(0);
 
         for box_ in self.boxes.iter() {
-            debug!("Flow[{:d}]: measuring {:s}", self.base.id, box_.debug_str());
+            debug!("Flow: measuring {:s}", box_.debug_str());
             box_.compute_borders(box_.style());
             let (this_minimum_width, this_preferred_width) =
                 box_.minimum_and_preferred_widths();
@@ -675,7 +665,7 @@ impl Flow for InlineFlow {
         // FIXME(ksh8281) avoid copy
         let flags_info = self.base.flags_info.clone();
         for kid in self.base.child_iter() {
-            let child_base = flow::mut_base(*kid);
+            let child_base = flow::mut_base(kid);
             child_base.position.size.width = self.base.position.size.width;
             child_base.flags_info.flags.set_inorder(self.base.flags_info.flags.inorder());
             child_base.flags_info.propagate_text_alignment_from_parent(&flags_info)
@@ -697,7 +687,7 @@ impl Flow for InlineFlow {
     }
 
     fn assign_height(&mut self, _: &mut LayoutContext) {
-        debug!("assign_height_inline: assigning height for flow {}", self.base.id);
+        debug!("assign_height_inline: assigning height for flow");
 
         // Divide the boxes into lines.
         //
@@ -771,12 +761,12 @@ impl Flow for InlineFlow {
 
                         // Offset from the top of the box is 1/2 of the leading + ascent
                         let text_offset = text_ascent + (line_height - em_size).scale_by(0.5);
-                        text_bounds.translate(&Point2D(cur_box.position.get().origin.x, Au(0)));
+                        text_bounds.translate(&Point2D(cur_box.border_box.get().origin.x, Au(0)));
 
                         (text_offset, line_height - text_offset, text_ascent)
                     },
                     GenericBox | IframeBox(_) => {
-                        let height = cur_box.position.get().size.height;
+                        let height = cur_box.border_box.get().size.height;
                         (height, Au::new(0), height)
                     },
                     UnscannedTextBox(_) => {
@@ -801,7 +791,7 @@ impl Flow for InlineFlow {
                 //
                 // The spec does not state which font to use. Previous versions of the code used
                 // the parent's font; this code uses the current font.
-                let parent_text_top = cur_box.style().Font.font_size;
+                let parent_text_top = cur_box.style().Font.get().font_size;
 
                 // We should calculate the distance from baseline to the bottom of the parent's
                 // content area. But for now we assume it's zero.
@@ -831,7 +821,7 @@ impl Flow for InlineFlow {
                     bottommost = bottom_from_base;
                 }
 
-                cur_box.position.borrow_mut().get().origin.y = line.bounds.origin.y + offset + top;
+                cur_box.border_box.borrow_mut().get().origin.y = line.bounds.origin.y + offset + top;
             }
 
             // Calculate the distance from baseline to the top of the biggest box with 'bottom'
@@ -860,7 +850,7 @@ impl Flow for InlineFlow {
                     _ => baseline_offset,
                 };
 
-                cur_box.position.borrow_mut().get().origin.y = cur_box.position.get().origin.y +
+                cur_box.border_box.borrow_mut().get().origin.y = cur_box.border_box.get().origin.y +
                     adjust_offset;
 
                 if cur_box.inline_info.with(|info| info.is_none()) {

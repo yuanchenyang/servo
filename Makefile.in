@@ -41,6 +41,7 @@ endif
 ifdef CFG_ENABLE_DEBUG
   $(info cfg: enabling more debugging (CFG_ENABLE_DEBUG))
   CFG_RUSTC_FLAGS += -Z extra-debug-info
+  CFG_RUSTC_SELF_FLAGS += -Z extra-debug-info
 else
   # Enable debug!() etc even without configure --enable-debug
   # The evaluation of these prints & their arguments is controlled
@@ -91,11 +92,11 @@ $(S)config.stamp : $(S)configure $(S)Makefile.in
 ifneq ($(CFG_LOCAL_RUSTC),1)
 $(CFG_RUSTC): $(B)src/compiler/rust/rust-auto-clean-stamp
 	@$(call E, building rustc)
-	$(Q)CFG_RUSTC_FLAGS= CFG_ENABLE_DEBUG= RUSTFLAGS= $(MAKE) -C "$(CFG_BUILD_DIR)src/compiler/rust"
+	$(Q)CFG_RUSTC_FLAGS= CFG_ENABLE_DEBUG= RUSTFLAGS="$(CFG_RUSTC_SELF_FLAGS)" $(MAKE) -C "$(CFG_BUILD_DIR)src/compiler/rust"
 
 clean-rust:
 	@$(call E, cleaning rustc)
-	$(Q)CFG_RUSTC_FLAGS= CFG_ENABLE_DEBUG= RUSTFLAGS= $(MAKE) -C "$(CFG_BUILD_DIR)src/compiler/rust" clean
+	$(Q)CFG_RUSTC_FLAGS= CFG_ENABLE_DEBUG= RUSTFLAGS="$(CFG_RUSTC_SELF_FLAGS)" $(MAKE) -C "$(CFG_BUILD_DIR)src/compiler/rust" clean
 
 else
 $(CFG_RUSTC):
@@ -210,28 +211,28 @@ DONE_SUBMODULES = $(foreach submodule,$(SUBMODULES),$(DONE_$(submodule)))
 
 RFLAGS_util = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES))
 SRC_util = $(call rwildcard,$(S)src/components/util/,*.rs)
-CRATE_util = $(S)src/components/util/util.rc
+CRATE_util = $(S)src/components/util/util.rs
 DONE_util = $(B)src/components/util/libutil.dummy
 
 DEPS_util = $(CRATE_util) $(SRC_util) $(DONE_SUBMODULES)
 
 RFLAGS_net = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/util
 SRC_net = $(call rwildcard,$(S)src/components/net/,*.rs)
-CRATE_net = $(S)src/components/net/net.rc
+CRATE_net = $(S)src/components/net/net.rs
 DONE_net = $(B)src/components/net/libnet.dummy
 
 DEPS_net = $(CRATE_net) $(SRC_net) $(DONE_SUBMODULES) $(DONE_util)
 
 RFLAGS_msg = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES))
 SRC_msg = $(call rwildcard,$(S)src/components/msg/,*.rs)
-CRATE_msg = $(S)src/components/msg/msg.rc
+CRATE_msg = $(S)src/components/msg/msg.rs
 DONE_msg = $(B)src/components/msg/libmsg.dummy
 
 DEPS_msg = $(CRATE_msg) $(SRC_msg) $(DONE_SUBMODULES)
 
 RFLAGS_gfx = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/util -L $(B)src/components/style -L $(B)src/components/net -L $(B)src/components/msg
 SRC_gfx = $(call rwildcard,$(S)src/components/gfx/,*.rs)
-CRATE_gfx = $(S)src/components/gfx/gfx.rc
+CRATE_gfx = $(S)src/components/gfx/gfx.rs
 DONE_gfx = $(B)src/components/gfx/libgfx.dummy
 
 DEPS_gfx = $(CRATE_gfx) $(SRC_gfx) $(DONE_SUBMODULES) $(DONE_util) $(DONE_style) $(DONE_net) $(DONE_msg)
@@ -246,7 +247,7 @@ BINDINGS_script = $(patsubst %.webidl, %Binding.rs, $(WEBIDLS_script))
 AUTOGEN_SRC_script = $(foreach var, $(BINDINGS_script), $(subst $(WEBIDLS_SRC), $(BINDINGS_SRC), $(var)))
 
 SRC_script = $(call rwildcard,$(S)src/components/script/,*.rs) $(AUTOGEN_SRC_script)
-CRATE_script = $(S)src/components/script/script.rc
+CRATE_script = $(S)src/components/script/script.rs
 DONE_script = $(B)src/components/script/libscript.dummy
 
 DEPS_script = $(CRATE_script) $(SRC_script) $(DONE_SUBMODULES) $(DONE_util) $(DONE_style) $(DONE_net) $(DONE_msg)
@@ -256,7 +257,7 @@ MAKO_ZIP = $(S)src/components/style/Mako-0.8.1.zip
 MAKO_style = $(S)src/components/style/properties.rs
 MAKO_SRC_style = $(MAKO_style).mako
 SRC_style = $(call rwildcard,$(S)src/components/style/,*.rs) $(MAKO_style)
-CRATE_style = $(S)src/components/style/style.rc
+CRATE_style = $(S)src/components/style/style.rs
 DONE_style = $(B)src/components/style/libstyle.dummy
 
 DEPS_style = $(CRATE_style) $(SRC_style) $(DONE_SUBMODULES) $(DONE_util)
@@ -264,7 +265,7 @@ DEPS_style = $(CRATE_style) $(SRC_style) $(DONE_SUBMODULES) $(DONE_util)
 RFLAGS_servo = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/gfx -L $(B)src/components/util -L $(B)src/components/net -L $(B)src/components/script -L $(B)src/components/style -L $(B)src/components/msg
 
 SRC_servo = $(call rwildcard,$(S)src/components/main/,*.rs)
-CRATE_servo = $(S)src/components/main/servo.rc
+CRATE_servo = $(S)src/components/main/servo.rs
 
 DEPS_servo = $(CRATE_servo) $(SRC_servo) $(DONE_SUBMODULES) $(DONE_util) $(DONE_gfx) $(DONE_script) $(DONE_net) $(DONE_msg) $(DONE_style)
 
@@ -297,7 +298,7 @@ bindinggen_dependencies := $(addprefix $(BINDINGS_SRC)/, BindingGen.py Bindings.
 $(AUTOGEN_SRC_script): $(BINDINGS_SRC)/%Binding.rs: $(bindinggen_dependencies) \
                                                     $(addprefix $(WEBIDLS_SRC)/, %.webidl)
 	@$(call E, "Maybe generating $(shell basename $@)...")
-	$(Q)PYTHONDONTWRITEBYTECODE=1 $(CFG_PYTHON2) $(BINDINGS_SRC)/pythonpath.py \
+	$(Q) $(CFG_PYTHON2) $(BINDINGS_SRC)/pythonpath.py \
 	  -I$(BINDINGS_SRC)/parser -I$(BINDINGS_SRC)/ply \
 	  -D$(BINDINGS_SRC) \
 	  $(BINDINGS_SRC)/BindingGen.py rs \
@@ -316,7 +317,7 @@ $(CACHE_DIR)/.done:
 
 $(BINDINGS_SRC)/ParserResults.pkl: $(globalgen_dependencies) \
                                    $(WEBIDLS_script)
-	$(Q)PYTHONDONTWRITEBYTECODE=1 $(CFG_PYTHON2) $(BINDINGS_SRC)/pythonpath.py \
+	$(Q) $(CFG_PYTHON2) $(BINDINGS_SRC)/pythonpath.py \
 	  -I$(BINDINGS_SRC)/parser -I$(BINDINGS_SRC)/ply \
 	  -D$(BINDINGS_SRC) \
 	  $(BINDINGS_SRC)/GlobalGen.py $(BINDINGS_SRC)/Bindings.conf . \

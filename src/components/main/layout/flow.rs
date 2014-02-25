@@ -33,18 +33,18 @@ use layout::display_list_builder::{DisplayListBuilder, ExtraDisplayListData};
 use layout::float_context::{FloatContext, Invalid};
 use layout::incremental::RestyleDamage;
 use layout::inline::InlineFlow;
-use layout::parallel::{FlowParallelInfo, UnsafeFlow};
+use layout::parallel::FlowParallelInfo;
 use layout::parallel;
 use layout::wrapper::ThreadSafeLayoutNode;
+use layout::flow_list::{FlowList, Link, Rawlink, FlowListIterator, MutFlowListIterator};
 
-use extra::dlist::{DList, DListIterator, MutDListIterator};
 use extra::container::Deque;
 use geom::point::Point2D;
+use geom::Size2D;
 use geom::rect::Rect;
 use gfx::display_list::{ClipDisplayItemClass, DisplayListCollection, DisplayList};
 use layout::display_list_builder::ToGfxColor;
 use gfx::color::Color;
-use servo_util::concurrentmap::{ConcurrentHashMap, ConcurrentHashMapIterator};
 use servo_util::geometry::Au;
 use std::cast;
 use std::cell::RefCell;
@@ -133,7 +133,7 @@ pub fn base<'a>(this: &'a Flow) -> &'a BaseFlow {
 }
 
 /// Iterates over the children of this immutable flow.
-pub fn imm_child_iter<'a>(flow: &'a Flow) -> DListIterator<'a,~Flow> {
+pub fn imm_child_iter<'a>(flow: &'a Flow) -> FlowListIterator<'a> {
     base(flow).children.iter()
 }
 
@@ -146,12 +146,12 @@ pub fn mut_base<'a>(this: &'a mut Flow) -> &'a mut BaseFlow {
 }
 
 /// Returns the last child of this flow.
-pub fn last_child<'a>(flow: &'a mut Flow) -> Option<&'a mut ~Flow> {
+pub fn last_child<'a>(flow: &'a mut Flow) -> Option<&'a mut Flow> {
     mut_base(flow).children.back_mut()
 }
 
 /// Iterates over the children of this flow.
-pub fn child_iter<'a>(flow: &'a mut Flow) -> MutDListIterator<'a,~Flow> {
+pub fn child_iter<'a>(flow: &'a mut Flow) -> MutFlowListIterator<'a> {
     mut_base(flow).children.mut_iter()
 }
 
@@ -170,11 +170,11 @@ pub trait ImmutableFlowUtils {
     /// Return true if this flow is a Block Container.
     fn is_block_container(self) -> bool;
 
-    /// Returns true if this flow is a block flow, an inline flow, or a float flow.
-    fn starts_block_flow(self) -> bool;
+    /// Returns true if this flow is a block flow.
+    fn is_block_flow(self) -> bool;
 
     /// Returns true if this flow is an inline flow.
-    fn starts_inline_flow(self) -> bool;
+    fn is_inline_flow(self) -> bool;
 
     /// Dumps the flow tree for debugging.
     fn dump(self);
@@ -197,10 +197,10 @@ pub trait MutableFlowUtils {
     // Mutators
 
     /// Invokes a closure with the first child of this flow.
-    fn with_first_child<R>(self, f: |Option<&mut ~Flow>| -> R) -> R;
+    fn with_first_child<R>(self, f: |Option<&mut Flow>| -> R) -> R;
 
     /// Invokes a closure with the last child of this flow.
-    fn with_last_child<R>(self, f: |Option<&mut ~Flow>| -> R) -> R;
+    fn with_last_child<R>(self, f: |Option<&mut Flow>| -> R) -> R;
 
     /// Computes the overflow region for this flow.
     fn store_overflow(self, _: &mut LayoutContext);
@@ -209,10 +209,14 @@ pub trait MutableFlowUtils {
     fn build_display_lists<E:ExtraDisplayListData>(
                           self,
                           builder: &DisplayListBuilder,
+                          container_block_size: &Size2D<Au>,
                           dirty: &Rect<Au>,
                           index: uint,
                           mut list: &RefCell<DisplayListCollection<E>>)
                           -> bool;
+
+    /// Destroys the flow.
+    fn destroy(self);
 }
 
 pub trait MutableOwnedFlowUtils {
@@ -220,15 +224,16 @@ pub trait MutableOwnedFlowUtils {
     /// it's present.
     fn add_new_child(&mut self, new_child: ~Flow);
 
-    /// Marks the flow as a leaf. The flow must not have children and must not be marked as a
-    /// nonleaf.
-    fn mark_as_leaf(&mut self, leaf_set: &FlowLeafSet);
-
-    /// Marks the flow as a nonleaf. The flow must not be marked as a leaf.
-    fn mark_as_nonleaf(&mut self);
+    /// Finishes a flow. Once a flow is finished, no more child flows or boxes may be added to it.
+    /// This will normally run the bubble-widths (minimum and preferred -- i.e. intrinsic -- width)
+    /// calculation, unless the global `bubble_widths_separately` flag is on.
+    ///
+    /// All flows must be finished at some point, or they will not have their intrinsic widths
+    /// properly computed. (This is not, however, a memory safety problem.)
+    fn finish(&mut self, context: &mut LayoutContext);
 
     /// Destroys the flow.
-    fn destroy(&mut self, leaf_set: &FlowLeafSet);
+    fn destroy(&mut self);
 }
 
 pub enum FlowClass {
@@ -316,7 +321,7 @@ static TEXT_ALIGN_SHIFT: u8 = 4;
 impl FlowFlagsInfo {
     /// Creates a new set of flow flags from the given style.
     pub fn new(style: &ComputedValues) -> FlowFlagsInfo {
-        let text_decoration = style.Text.text_decoration;
+        let text_decoration = style.Text.get().text_decoration;
         let mut flags = FlowFlags(0);
         flags.set_override_underline(text_decoration.underline);
         flags.set_override_overline(text_decoration.overline);
@@ -325,9 +330,9 @@ impl FlowFlagsInfo {
         // TODO(ksh8281) compute text-decoration-color,style,line
         let rare_flow_flags = if flags.is_text_decoration_enabled() {
             Some(~RareFlowFlags {
-                underline_color: style.Color.color.to_gfx_color(),
-                overline_color: style.Color.color.to_gfx_color(),
-                line_through_color: style.Color.color.to_gfx_color(),
+                underline_color: style.Color.get().color.to_gfx_color(),
+                overline_color: style.Color.get().color.to_gfx_color(),
+                line_through_color: style.Color.get().color.to_gfx_color(),
             })
         } else {
             None
@@ -462,13 +467,6 @@ bitfield!(FlowFlags, override_overline, set_override_overline, 0b0000_0100)
 // NB: If you update this, you need to update TEXT_DECORATION_OVERRIDE_BITMASK.
 bitfield!(FlowFlags, override_line_through, set_override_line_through, 0b0000_1000)
 
-// Whether this flow is marked as a leaf. Flows marked as leaves must not have any more kids added
-// to them.
-bitfield!(FlowFlags, is_leaf, set_is_leaf, 0b0100_0000)
-
-// Whether this flow is marked as a nonleaf. Flows marked as nonleaves must have children.
-bitfield!(FlowFlags, is_nonleaf, set_is_nonleaf, 0b1000_0000)
-
 // The text alignment for this flow.
 impl FlowFlags {
     #[inline]
@@ -502,10 +500,9 @@ pub struct BaseFlow {
     restyle_damage: RestyleDamage,
 
     /// The children of this flow.
-    children: DList<~Flow>,
-
-    /* TODO (Issue #87): debug only */
-    id: int,
+    children: FlowList,
+    next_sibling: Link,
+    prev_sibling: Rawlink,
 
     /* layout computations */
     // TODO: min/pref and position are used during disjoint phases of
@@ -568,14 +565,14 @@ impl Iterator<@Box> for BoxIterator {
 
 impl BaseFlow {
     #[inline]
-    pub fn new(id: int, node: ThreadSafeLayoutNode) -> BaseFlow {
+    pub fn new(node: ThreadSafeLayoutNode) -> BaseFlow {
         let style = node.style();
         BaseFlow {
             restyle_damage: node.restyle_damage(),
 
-            children: DList::new(),
-
-            id: id,
+            children: FlowList::new(),
+            next_sibling: None,
+            prev_sibling: Rawlink::none(),
 
             min_width: Au::new(0),
             pref_width: Au::new(0),
@@ -595,7 +592,7 @@ impl BaseFlow {
         }
     }
 
-    pub fn child_iter<'a>(&'a mut self) -> MutDListIterator<'a,~Flow> {
+    pub fn child_iter<'a>(&'a mut self) -> MutFlowListIterator<'a> {
         self.children.mut_iter()
     }
 }
@@ -636,16 +633,16 @@ impl<'a> ImmutableFlowUtils for &'a Flow {
         }
     }
 
-    /// Returns true if this flow is a block flow, an inline-block flow, or a float flow.
-    fn starts_block_flow(self) -> bool {
+    /// Returns true if this flow is a block flow.
+    fn is_block_flow(self) -> bool {
         match self.class() {
             BlockFlowClass => true,
             InlineFlowClass => false,
         }
     }
 
-    /// Returns true if this flow is a block flow, an inline flow, or a float flow.
-    fn starts_inline_flow(self) -> bool {
+    /// Returns true if this flow is an inline flow.
+    fn is_inline_flow(self) -> bool {
         match self.class() {
             InlineFlowClass => true,
             BlockFlowClass => false,
@@ -734,12 +731,12 @@ impl<'a> MutableFlowUtils for &'a mut Flow {
     }
 
     /// Invokes a closure with the first child of this flow.
-    fn with_first_child<R>(self, f: |Option<&mut ~Flow>| -> R) -> R {
+    fn with_first_child<R>(self, f: |Option<&mut Flow>| -> R) -> R {
         f(mut_base(self).children.front_mut())
     }
 
     /// Invokes a closure with the last child of this flow.
-    fn with_last_child<R>(self, f: |Option<&mut ~Flow>| -> R) -> R {
+    fn with_last_child<R>(self, f: |Option<&mut Flow>| -> R) -> R {
         f(mut_base(self).children.back_mut())
     }
 
@@ -747,7 +744,7 @@ impl<'a> MutableFlowUtils for &'a mut Flow {
         let my_position = mut_base(self).position;
         let mut overflow = my_position;
         for kid in mut_base(self).child_iter() {
-            let mut kid_overflow = base(*kid).overflow;
+            let mut kid_overflow = base(kid).overflow;
             kid_overflow = kid_overflow.translate(&my_position.origin);
             overflow = overflow.union(&kid_overflow)
         }
@@ -762,14 +759,15 @@ impl<'a> MutableFlowUtils for &'a mut Flow {
     fn build_display_lists<E:ExtraDisplayListData>(
                           self,
                           builder: &DisplayListBuilder,
+                          container_block_size: &Size2D<Au>,
                           dirty: &Rect<Au>,
                           mut index: uint,
                           lists: &RefCell<DisplayListCollection<E>>)
                           -> bool {
-        debug!("Flow: building display list for f{}", base(self).id);
+        debug!("Flow: building display list");
         index = match self.class() {
-            BlockFlowClass => self.as_block().build_display_list_block(builder, dirty, index, lists),
-            InlineFlowClass => self.as_inline().build_display_list_inline(builder, dirty, index, lists),
+            BlockFlowClass => self.as_block().build_display_list_block(builder, container_block_size, dirty, index, lists),
+            InlineFlowClass => self.as_inline().build_display_list_inline(builder, container_block_size, dirty, index, lists),
         };
 
         if lists.with_mut(|lists| lists.lists[index].list.len() == 0) {
@@ -780,8 +778,21 @@ impl<'a> MutableFlowUtils for &'a mut Flow {
             let mut child_lists = DisplayListCollection::new();
             child_lists.add_list(DisplayList::new());
             let child_lists = RefCell::new(child_lists);
+            let container_block_size = match self.class() {
+                BlockFlowClass => {
+                    if self.as_block().box_.is_some() {
+                        self.as_block().box_.get_ref().border_box.get().size
+                    } else {
+                        base(self).position.size
+                    }
+                },
+                _ => {
+                    base(self).position.size
+                }
+            };
+
             for kid in child_iter(self) {
-                kid.build_display_lists(builder, dirty, 0u, &child_lists);
+                kid.build_display_lists(builder, &container_block_size, dirty, 0u, &child_lists);
             }
 
             let mut child_lists = Some(child_lists.unwrap());
@@ -809,6 +820,14 @@ impl<'a> MutableFlowUtils for &'a mut Flow {
         true
     }
 
+    /// Destroys the flow.
+    fn destroy(self) {
+        for kid in child_iter(self) {
+            kid.destroy()
+        }
+
+        mut_base(self).destroyed = true
+    }
 }
 
 impl MutableOwnedFlowUtils for ~Flow {
@@ -820,96 +839,26 @@ impl MutableOwnedFlowUtils for ~Flow {
         }
 
         let base = mut_base(*self);
-        assert!(!base.flags_info.flags.is_leaf());
         base.children.push_back(new_child);
         let _ = base.parallel.children_count.fetch_add(1, Relaxed);
     }
 
-    /// Marks the flow as a leaf. The flow must not have children and must not be marked as a
-    /// nonleaf.
-    fn mark_as_leaf(&mut self, leaf_set: &FlowLeafSet) {
-        {
-            let base = mut_base(*self);
-            if base.flags_info.flags.is_nonleaf() {
-                fail!("attempted to mark a nonleaf flow as a leaf!")
-            }
-            if base.children.len() != 0 {
-                fail!("attempted to mark a flow with children as a leaf!")
-            }
-            base.flags_info.flags.set_is_leaf(true)
+    /// Finishes a flow. Once a flow is finished, no more child flows or boxes may be added to it.
+    /// This will normally run the bubble-widths (minimum and preferred -- i.e. intrinsic -- width)
+    /// calculation, unless the global `bubble_widths_separately` flag is on.
+    ///
+    /// All flows must be finished at some point, or they will not have their intrinsic widths
+    /// properly computed. (This is not, however, a memory safety problem.)
+    fn finish(&mut self, context: &mut LayoutContext) {
+        if !context.opts.bubble_widths_separately {
+            self.bubble_widths(context)
         }
-        leaf_set.insert(self)
-    }
-
-    /// Marks the flow as a nonleaf. The flow must not be marked as a leaf.
-    fn mark_as_nonleaf(&mut self) {
-        let base = mut_base(*self);
-        if base.flags_info.flags.is_leaf() {
-            fail!("attempted to mark a leaf flow as a nonleaf!")
-        }
-        base.flags_info.flags.set_is_nonleaf(true)
-        // We don't check to make sure there are no children as they might be added later.
     }
 
     /// Destroys the flow.
-    fn destroy(&mut self, leaf_set: &FlowLeafSet) {
-        let is_leaf = {
-            let base = mut_base(*self);
-            base.children.len() == 0
-        };
-
-        if is_leaf {
-            leaf_set.remove(self);
-        } else {
-            for kid in child_iter(*self) {
-                kid.destroy(leaf_set)
-            }
-        }
-
-        let base = mut_base(*self);
-        base.destroyed = true
+    fn destroy(&mut self) {
+        let self_borrowed: &mut Flow = *self;
+        self_borrowed.destroy();
     }
 }
 
-/// Keeps track of the leaves of the flow tree. This is used to efficiently start bottom-up
-/// parallel traversals.
-pub struct FlowLeafSet {
-    priv set: ConcurrentHashMap<UnsafeFlow,()>,
-}
-
-impl FlowLeafSet {
-    /// Creates a new flow leaf set.
-    pub fn new() -> FlowLeafSet {
-        FlowLeafSet {
-            set: ConcurrentHashMap::with_locks_and_buckets(64, 256),
-        }
-    }
-
-    /// Inserts a newly-created flow into the leaf set.
-    fn insert(&self, flow: &~Flow) {
-        self.set.insert(parallel::owned_flow_to_unsafe_flow(flow), ());
-    }
-
-    /// Removes a flow from the leaf set. Asserts that the flow was indeed in the leaf set. (This
-    /// invariant is needed for memory safety, as there must always be exactly one leaf set.)
-    fn remove(&self, flow: &~Flow) {
-        if !self.contains(flow) {
-            fail!("attempted to remove a flow from the leaf set that wasn't in the set!")
-        }
-        let flow = parallel::owned_flow_to_unsafe_flow(flow);
-        self.set.remove(&flow);
-    }
-
-    pub fn contains(&self, flow: &~Flow) -> bool {
-        let flow = parallel::owned_flow_to_unsafe_flow(flow);
-        self.set.contains_key(&flow)
-    }
-
-    pub fn clear(&self) {
-        self.set.clear()
-    }
-
-    pub fn iter<'a>(&'a self) -> ConcurrentHashMapIterator<'a,UnsafeFlow,()> {
-        self.set.iter()
-    }
-}

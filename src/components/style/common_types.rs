@@ -160,7 +160,6 @@ pub mod specified {
 }
 
 pub mod computed {
-    use cssparser;
     pub use CSSColor = cssparser::Color;
     pub use compute_CSSColor = super::super::longhands::computed_as_specified;
     use super::*;
@@ -168,26 +167,34 @@ pub mod computed {
     pub use servo_util::geometry::Au;
 
     pub struct Context {
-        current_color: cssparser::RGBA,
-        font_size: Au,
-        font_weight: longhands::font_weight::computed_value::T,
-        position: longhands::position::SpecifiedValue,
-        float: longhands::float::SpecifiedValue,
+        color: longhands::color::computed_value::T,
+        inherited_font_weight: longhands::font_weight::computed_value::T,
+        inherited_font_size: longhands::font_size::computed_value::T,
+        font_size: longhands::font_size::computed_value::T,
+        positioned: bool,
+        floated: bool,
+        border_top_present: bool,
+        border_right_present: bool,
+        border_bottom_present: bool,
+        border_left_present: bool,
         is_root_element: bool,
-        has_border_top: bool,
-        has_border_right: bool,
-        has_border_bottom: bool,
-        has_border_left: bool,
         // TODO, as needed: root font size, viewport size, etc.
     }
 
+    #[inline]
     pub fn compute_Au(value: specified::Length, context: &Context) -> Au {
+        compute_Au_with_font_size(value, context.font_size)
+    }
+
+    /// A special version of `compute_Au` used for `font-size`.
+    #[inline]
+    pub fn compute_Au_with_font_size(value: specified::Length, reference_font_size: Au) -> Au {
         match value {
             specified::Au_(value) => value,
-            specified::Em(value) => context.font_size.scale_by(value),
+            specified::Em(value) => reference_font_size.scale_by(value),
             specified::Ex(value) => {
                 let x_height = 0.5;  // TODO: find that from the font
-                context.font_size.scale_by(value * x_height)
+                reference_font_size.scale_by(value * x_height)
             },
         }
     }

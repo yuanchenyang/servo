@@ -4,7 +4,6 @@
 
 use font_context::FontContext;
 use style::computed_values::border_style;
-use opts::Opts;
 
 use azure::azure_hl::{B8G8R8A8, Color, ColorPattern, DrawOptions};
 use azure::azure_hl::{DrawSurfaceOptions, DrawTarget, Linear, StrokeOptions};
@@ -18,6 +17,7 @@ use geom::side_offsets::SideOffsets2D;
 use servo_net::image::base::Image;
 use png::{RGBA8, K8, KA8};
 use servo_util::geometry::Au;
+use servo_util::opts::Opts;
 use std::libc::types::common::c99::uint16_t;
 use std::libc::size_t;
 
@@ -60,6 +60,15 @@ impl<'a> RenderContext<'a>  {
         self.draw_border_segment(Right, bounds, border, color, style);
         self.draw_border_segment(Bottom, bounds, border, color, style);
         self.draw_border_segment(Left, bounds, border, color, style);
+    }
+
+    pub fn draw_line(&self,
+                     bounds: &Rect<Au>,
+                     color: Color,
+                     style: border_style::T) {
+        self.draw_target.make_current();
+
+        self.draw_line_segment(bounds, color, style);
     }
 
     pub fn draw_push_clip(&self, bounds: &Rect<Au>) {
@@ -144,6 +153,25 @@ impl<'a> RenderContext<'a>  {
                 self.draw_solid_border_segment(direction,bounds,border,color_select);
             }
             //FIXME(sammykim): Five more styles should be implemented.
+            //double, groove, ridge, inset, outset
+        }
+    }
+
+    fn draw_line_segment(&self, bounds: &Rect<Au>, color: Color, style: border_style::T) {
+        let border = SideOffsets2D::new_all_same(bounds.size.width).to_float_px();
+
+        match style{
+            border_style::none | border_style::hidden => {}
+            border_style::dotted => {
+                //FIXME(sankha93): Dotted style should be implemented.
+            }
+            border_style::dashed => {
+                self.draw_dashed_border_segment(Right,bounds,border,color);
+            }
+            border_style::solid => {
+                self.draw_solid_border_segment(Right,bounds,border,color);
+            }
+            //FIXME(sankha93): Five more styles should be implemented.
             //double, groove, ridge, inset, outset
         }
     }
