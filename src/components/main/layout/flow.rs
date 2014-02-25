@@ -192,6 +192,8 @@ pub trait MutableFlowUtils {
     /// Traverses the tree in postorder.
     fn traverse_postorder<T:PostorderFlowTraversal>(self, traversal: &mut T) -> bool;
 
+    fn traverse<T:FlowTraversal>(self, traversal: &mut T, tType: TraversalType) -> bool;
+
     // Mutators
 
     /// Invokes a closure with the first child of this flow.
@@ -234,6 +236,11 @@ pub enum FlowClass {
     InlineFlowClass,
 }
 
+pub trait FlowTraversal {
+    /// The operation to perform. Return true to continue or false to stop.
+    fn process(&mut self, flow: &mut Flow) -> bool;
+}
+
 /// A top-down traversal.
 pub trait PreorderFlowTraversal {
     /// The operation to perform. Return true to continue or false to stop.
@@ -265,6 +272,11 @@ pub trait PostorderFlowTraversal {
     fn should_prune(&mut self, _flow: &mut Flow) -> bool {
         false
     }
+}
+
+pub enum TraversalType {
+    PostorderTraversalType,
+    PreorderTraversalType
 }
 
 #[deriving(Clone)]
@@ -695,6 +707,30 @@ impl<'a> MutableFlowUtils for &'a mut Flow {
         }
 
         traversal.process(self)
+    }
+
+    fn traverse<T:FlowTraversal>(self, traversal: &mut T, tType: TraversalType) -> bool {
+        match tType {
+            PreorderTraversalType => {
+                if !traversal.process(self) {
+                    return false
+                }
+                for kid in child_iter(self) {
+                    if !kid.traverse(traversal, PreorderTraversalType) {
+                        return false
+                    }
+                }
+                true
+            },
+            PostorderTraversalType => {
+                for kid in child_iter(self) {
+                    if !kid.traverse(traversal, PostorderTraversalType) {
+                        return false
+                    }
+                }
+                traversal.process(self)
+            }
+        }
     }
 
     /// Invokes a closure with the first child of this flow.

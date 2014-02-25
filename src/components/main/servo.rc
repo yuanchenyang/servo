@@ -101,6 +101,9 @@ pub mod layout {
     pub mod incremental;
     pub mod wrapper;
     pub mod extra;
+
+    pub mod simple_test;
+    pub mod libftl;
 }
 
 pub mod windowing;

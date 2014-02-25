@@ -56,6 +56,9 @@ use std::ptr;
 use std::util;
 use style::{AuthorOrigin, Stylesheet, Stylist};
 
+use layout::libftl::PrintInfoTraversal;
+use layout::simple_test::layout;
+
 /// Information needed by the layout task.
 pub struct LayoutTask {
     /// The ID of the pipeline that we belong to.
@@ -588,6 +591,12 @@ impl LayoutTask {
             });
             layout_root.traverse_postorder(&mut ComputeDamageTraversal.clone());
         });
+
+        debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
+        debug!("--------------- New Flow ---------------");
+        //layout_root.traverse_preorder(&mut PrintInfoTraversal.clone());
+        layout(layout_root);
+        debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
 
         // Perform the primary layout passes over the flow tree to compute the locations of all
         // the boxes.
