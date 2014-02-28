@@ -514,6 +514,10 @@ pub struct BaseFlow {
     /// containing block.
     position: Rect<Au>,
 
+    height: Au,
+    bottom: Au,
+
+
     /// The amount of overflow of this flow, relative to the containing block. Must include all the
     /// pixels of all the display list items for correct invalidation.
     overflow: Rect<Au>,
@@ -576,6 +580,10 @@ impl BaseFlow {
 
             min_width: Au::new(0),
             pref_width: Au::new(0),
+
+            height: Au::new(0),
+            bottom: Au::new(0),
+
             position: Au::zero_rect(),
             overflow: Au::zero_rect(),
 
@@ -861,4 +869,3 @@ impl MutableOwnedFlowUtils for ~Flow {
         self_borrowed.destroy();
     }
 }
-

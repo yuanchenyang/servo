@@ -60,8 +60,9 @@ use std::util;
 use style::{AuthorOrigin, ComputedValues, Stylesheet, Stylist};
 use style;
 
-use layout::libftl::PrintInfoTraversal;
+// use layout::libftl::PrintInfoTraversal;
 use layout::simple_test::layout;
+use layout::libftl::{FtlNode, as_ftl_node};
 
 /// Information needed by the layout task.
 pub struct LayoutTask {
@@ -279,7 +280,7 @@ impl LayoutTask {
            chan: LayoutChan,
            constellation_chan: ConstellationChan,
            script_chan: ScriptChan,
-           render_chan: RenderChan<OpaqueNode>, 
+           render_chan: RenderChan<OpaqueNode>,
            image_cache_task: ImageCacheTask,
            opts: &Opts,
            profiler_chan: ProfilerChan)
@@ -405,7 +406,7 @@ impl LayoutTask {
     /// crash.
     fn exit_now(&mut self) {
         let (response_port, response_chan) = Chan::new();
-        
+
         match self.parallel_traversal {
             None => {}
             Some(ref mut traversal) => traversal.shutdown(),
@@ -601,23 +602,23 @@ impl LayoutTask {
         debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
         debug!("--------------- New Flow ---------------");
         //layout_root.traverse_preorder(&mut PrintInfoTraversal.clone());
-        layout(layout_root);
+        layout(as_ftl_node(layout_root));
         debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
 
         // Perform the primary layout passes over the flow tree to compute the locations of all
         // the boxes.
-        profile(time::LayoutMainCategory, self.profiler_chan.clone(), || {
-            match self.parallel_traversal {
-                None => {
-                    // Sequential mode.
-                    self.solve_constraints(layout_root, &mut layout_ctx)
-                }
-                Some(_) => {
-                    // Parallel mode.
-                    self.solve_constraints_parallel(&mut layout_root, &mut layout_ctx)
-                }
-            }
-        });
+        // profile(time::LayoutMainCategory, self.profiler_chan.clone(), || {
+        //     match self.parallel_traversal {
+        //         None => {
+        //             // Sequential mode.
+        //             self.solve_constraints(layout_root, &mut layout_ctx)
+        //         }
+        //         Some(_) => {
+        //             // Parallel mode.
+        //             self.solve_constraints_parallel(&mut layout_root, &mut layout_ctx)
+        //         }
+        //     }
+        // });
 
         // Build the display list if necessary, and send it to the renderer.
         if data.goal == ReflowForDisplay {
@@ -637,7 +638,7 @@ impl LayoutTask {
                 let mut color = color::rgba(255.0, 255.0, 255.0, 255.0);
 
                 for child in node.traverse_preorder() {
-                    if child.type_id() == ElementNodeTypeId(HTMLHtmlElementTypeId) || 
+                    if child.type_id() == ElementNodeTypeId(HTMLHtmlElementTypeId) ||
                             child.type_id() == ElementNodeTypeId(HTMLBodyElementTypeId) {
                         let element_bg_color = {
                             let thread_safe_child = ThreadSafeLayoutNode::new(&child);
@@ -777,7 +778,7 @@ impl LayoutTask {
                                   Au::from_frac_px(point.y as f64));
                     let resp = hit_test(x,y,display_list.list);
                     if resp.is_some() {
-                        reply_chan.send(Ok(resp.unwrap())); 
+                        reply_chan.send(Ok(resp.unwrap()));
                         return
                     }
                 }
@@ -851,4 +852,3 @@ impl LayoutTask {
             util::replace(layout_data_ref.get(), None));
     }
 }
-

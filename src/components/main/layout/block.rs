@@ -57,6 +57,9 @@ pub struct BlockFlow {
     /// The associated box.
     box_: Option<Box>,
 
+    my_height: Au,
+    childs_height: Au,
+
     //TODO: is_fixed and is_root should be bit fields to conserve memory.
     /// Whether this block flow is the root flow.
     is_root: bool,
@@ -73,6 +76,8 @@ impl BlockFlow {
         BlockFlow {
             base: BaseFlow::new((*node).clone()),
             box_: Some(Box::new(constructor, node)),
+            my_height: Au::new(0),
+            childs_height: Au::new(0),
             is_root: false,
             is_fixed: is_fixed,
             float: None
@@ -86,6 +91,8 @@ impl BlockFlow {
         BlockFlow {
             base: BaseFlow::new((*node).clone()),
             box_: Some(Box::new(constructor, node)),
+            my_height: Au::new(0),
+            childs_height: Au::new(0),
             is_root: false,
             is_fixed: false,
             float: Some(~FloatedBlockInfo::new(float_type))
@@ -96,6 +103,8 @@ impl BlockFlow {
         BlockFlow {
             base: base,
             box_: None,
+            my_height: Au::new(0),
+            childs_height: Au::new(0),
             is_root: true,
             is_fixed: false,
             float: None
@@ -106,6 +115,8 @@ impl BlockFlow {
         BlockFlow {
             base: base,
             box_: None,
+            my_height: Au::new(0),
+            childs_height: Au::new(0),
             is_root: false,
             is_fixed: false,
             float: Some(~FloatedBlockInfo::new(float_type))
