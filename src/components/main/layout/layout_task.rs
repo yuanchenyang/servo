@@ -61,8 +61,8 @@ use style::{AuthorOrigin, ComputedValues, Stylesheet, Stylist};
 use style;
 
 // use layout::libftl::PrintInfoTraversal;
-use layout::simple_test::layout;
-use layout::libftl::{FtlNode, as_ftl_node};
+use layout::ftl_layout::{layout, FtlNode};
+use layout::ftl_lib::{as_ftl_node};
 
 /// Information needed by the layout task.
 pub struct LayoutTask {
@@ -602,23 +602,25 @@ impl LayoutTask {
         debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
         debug!("--------------- New Flow ---------------");
         //layout_root.traverse_preorder(&mut PrintInfoTraversal.clone());
-        layout(as_ftl_node(layout_root));
+
         debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
 
         // Perform the primary layout passes over the flow tree to compute the locations of all
         // the boxes.
-        // profile(time::LayoutMainCategory, self.profiler_chan.clone(), || {
-        //     match self.parallel_traversal {
-        //         None => {
-        //             // Sequential mode.
-        //             self.solve_constraints(layout_root, &mut layout_ctx)
-        //         }
-        //         Some(_) => {
-        //             // Parallel mode.
-        //             self.solve_constraints_parallel(&mut layout_root, &mut layout_ctx)
-        //         }
-        //     }
-        // });
+        profile(time::LayoutMainCategory, self.profiler_chan.clone(), || {
+            match self.parallel_traversal {
+                None => {
+                    // Sequential mode.
+                    self.solve_constraints(layout_root, &mut layout_ctx)
+                }
+                Some(_) => {
+                    // Parallel mode.
+                    self.solve_constraints_parallel(&mut layout_root, &mut layout_ctx)
+                }
+            }
+        });
+
+        layout(as_ftl_node(layout_root));
 
         // Build the display list if necessary, and send it to the renderer.
         if data.goal == ReflowForDisplay {

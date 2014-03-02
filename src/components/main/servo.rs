@@ -103,8 +103,8 @@ pub mod layout {
     pub mod wrapper;
     pub mod extra;
 
-    pub mod simple_test;
-    pub mod libftl;
+    pub mod ftl_layout;
+    pub mod ftl_lib;
 }
 
 pub mod windowing;
@@ -195,4 +195,3 @@ fn run(opts: opts::Opts) {
 
     pool.shutdown();
 }
-
