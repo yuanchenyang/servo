@@ -9,6 +9,7 @@ use servo_util::geometry::Au;
 use extra::arc::Arc;
 use geom::{Point2D, Rect, SideOffsets2D, Size2D};
 use style::{ComputedValues};
+use style::computed_values::LengthOrPercentageOrAuto;
 
 pub fn isEven( num: int ) -> bool {
     num % 2 == 0
@@ -21,12 +22,11 @@ pub fn base<'a,I>(node: &'a mut layout::ftl_layout::FtlNode) -> &'a mut I {
     }
 }
 
-pub fn getHeight(flowbox: &Option<Box>) -> Au {
-    for b in flowbox.iter() {
-        return MaybeAuto::from_style(b.style.get().Box.get().height,
-                                     Au::new(0)).specified_or_zero();
-    }
-    Au(0)
+pub fn getHeight(length: LengthOrPercentageOrAuto) -> Au {
+    //for b in flowbox.iter() {
+    MaybeAuto::from_style(length, Au::new(0)).specified_or_zero()
+    //}
+    //Au(0)
 }
 
 pub fn makeRect(x: Au, y: Au, width: Au, height: Au) -> Rect<Au> {

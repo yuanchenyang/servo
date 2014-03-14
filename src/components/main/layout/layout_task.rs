@@ -61,7 +61,7 @@ use style::{AuthorOrigin, ComputedValues, Stylesheet, Stylist};
 use style;
 
 // use layout::libftl::PrintInfoTraversal;
-use layout::ftl_layout::{layout, FtlNode};
+use layout::ftl_layout::{layout};
 use layout::ftl_lib::{as_ftl_node};
 
 /// Information needed by the layout task.
@@ -517,6 +517,7 @@ impl LayoutTask {
     /// The high-level routine that performs layout tasks.
     fn handle_reflow(&mut self, data: &Reflow) {
         // FIXME: Isolate this transmutation into a "bridge" module.
+
         let node: &mut LayoutNode = unsafe {
             let mut node: JS<Node> = JS::from_trusted_node_address(data.document_root);
             transmute(&mut node)
@@ -599,31 +600,34 @@ impl LayoutTask {
             layout_root.traverse_postorder(&mut ComputeDamageTraversal.clone());
         });
 
-        debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
-        debug!("--------------- New Flow ---------------");
-        //layout_root.traverse_preorder(&mut PrintInfoTraversal.clone());
-
-        debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
-
         // Perform the primary layout passes over the flow tree to compute the locations of all
         // the boxes.
-        profile(time::LayoutMainCategory, self.profiler_chan.clone(), || {
-            match self.parallel_traversal {
-                None => {
-                    // Sequential mode.
-                    self.solve_constraints(layout_root, &mut layout_ctx)
-                }
-                Some(_) => {
-                    // Parallel mode.
-                    self.solve_constraints_parallel(&mut layout_root, &mut layout_ctx)
-                }
-            }
-        });
+
+        debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
+        debug!("--------------- New Flow ---------------");
+
+        // profile(time::LayoutMainCategory, self.profiler_chan.clone(), || {
+        //     match self.parallel_traversal {
+        //         None => {
+        //             // Sequential mode.
+        //             self.solve_constraints(layout_root, &mut layout_ctx)
+        //         }
+        //         Some(_) => {
+        //             // Parallel mode.
+        //             self.solve_constraints_parallel(&mut layout_root, &mut layout_ctx)
+        //         }
+        //     }
+        // });
+
+        //self.solve_constraints(layout_root, &mut layout_ctx);
 
         layout(as_ftl_node(layout_root));
 
+        debug!("Finished FTL");
+
         // Build the display list if necessary, and send it to the renderer.
         if data.goal == ReflowForDisplay {
+            debug!("Started display");
             profile(time::LayoutDispListBuildCategory, self.profiler_chan.clone(), || {
                 let root_size = flow::base(layout_root).position.size;
                 let mut display_list_collection = DisplayListCollection::new();
@@ -677,6 +681,8 @@ impl LayoutTask {
                 self.render_chan.send(RenderMsg(render_layer));
             });
         }
+
+        debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
 
         layout_root.destroy();
 

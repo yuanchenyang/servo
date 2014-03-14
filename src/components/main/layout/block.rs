@@ -13,6 +13,7 @@ use layout::flow::{BaseFlow, BlockFlowClass, FlowClass, Flow, ImmutableFlowUtils
 use layout::flow;
 use layout::model::{MaybeAuto, Specified, Auto, specified_or_none, specified};
 use layout::wrapper::ThreadSafeLayoutNode;
+use layout::ftl_layout::BlockFlowFtlAttrs;
 
 use std::cell::RefCell;
 use geom::{Point2D, Rect, SideOffsets2D, Size2D};
@@ -57,8 +58,7 @@ pub struct BlockFlow {
     /// The associated box.
     box_: Option<Box>,
 
-    my_height: Au,
-    childs_height: Au,
+    ftl_attrs: BlockFlowFtlAttrs,
 
     //TODO: is_fixed and is_root should be bit fields to conserve memory.
     /// Whether this block flow is the root flow.
@@ -76,8 +76,7 @@ impl BlockFlow {
         BlockFlow {
             base: BaseFlow::new((*node).clone()),
             box_: Some(Box::new(constructor, node)),
-            my_height: Au::new(0),
-            childs_height: Au::new(0),
+            ftl_attrs: BlockFlowFtlAttrs::new(),
             is_root: false,
             is_fixed: is_fixed,
             float: None
@@ -91,8 +90,7 @@ impl BlockFlow {
         BlockFlow {
             base: BaseFlow::new((*node).clone()),
             box_: Some(Box::new(constructor, node)),
-            my_height: Au::new(0),
-            childs_height: Au::new(0),
+            ftl_attrs: BlockFlowFtlAttrs::new(),
             is_root: false,
             is_fixed: false,
             float: Some(~FloatedBlockInfo::new(float_type))
@@ -103,8 +101,7 @@ impl BlockFlow {
         BlockFlow {
             base: base,
             box_: None,
-            my_height: Au::new(0),
-            childs_height: Au::new(0),
+            ftl_attrs: BlockFlowFtlAttrs::new(),
             is_root: true,
             is_fixed: false,
             float: None
@@ -115,8 +112,7 @@ impl BlockFlow {
         BlockFlow {
             base: base,
             box_: None,
-            my_height: Au::new(0),
-            childs_height: Au::new(0),
+            ftl_attrs: BlockFlowFtlAttrs::new(),
             is_root: false,
             is_fixed: false,
             float: Some(~FloatedBlockInfo::new(float_type))
@@ -558,6 +554,12 @@ impl BlockFlow {
         }
 
         let abs_rect = Rect(self.base.abs_position, self.base.position.size);
+
+        debug!("abs_rect: {}\ndirty: {}\nintersect: {}",
+               abs_rect,
+               *dirty,
+               abs_rect.intersects(dirty));
+
         if !abs_rect.intersects(dirty) {
             return index;
         }

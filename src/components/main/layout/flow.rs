@@ -37,6 +37,7 @@ use layout::parallel::FlowParallelInfo;
 use layout::parallel;
 use layout::wrapper::ThreadSafeLayoutNode;
 use layout::flow_list::{FlowList, Link, Rawlink, FlowListIterator, MutFlowListIterator};
+use layout::ftl_layout::BaseFlowFtlAttrs;
 
 use extra::container::Deque;
 use geom::point::Point2D;
@@ -514,9 +515,7 @@ pub struct BaseFlow {
     /// containing block.
     position: Rect<Au>,
 
-    height: Au,
-    bottom: Au,
-
+    ftl_attrs: BaseFlowFtlAttrs,
 
     /// The amount of overflow of this flow, relative to the containing block. Must include all the
     /// pixels of all the display list items for correct invalidation.
@@ -581,8 +580,7 @@ impl BaseFlow {
             min_width: Au::new(0),
             pref_width: Au::new(0),
 
-            height: Au::new(0),
-            bottom: Au::new(0),
+            ftl_attrs: BaseFlowFtlAttrs::new(),
 
             position: Au::zero_rect(),
             overflow: Au::zero_rect(),
