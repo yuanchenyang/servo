@@ -9,7 +9,7 @@ use servo_util::geometry::Au;
 use extra::arc::Arc;
 use geom::{Point2D, Rect, SideOffsets2D, Size2D};
 use style::{ComputedValues};
-use style::computed_values::LengthOrPercentageOrAuto;
+use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto};
 
 pub fn isEven( num: int ) -> bool {
     num % 2 == 0
@@ -34,8 +34,28 @@ pub fn makeRect(x: Au, y: Au, width: Au, height: Au) -> Rect<Au> {
          Size2D(width, height))
 }
 
+pub fn isAuto(length : LengthOrPercentageOrAuto) -> bool {
+    match length {
+        LPA_Auto => true,
+        _ => false
+    }
+
+}
+
+pub fn max (a : Au, b : Au) -> Au {
+    if (a > b) {
+        a
+    } else {
+        b
+    }
+}
+
 pub fn rectHeight(rect: Rect<Au>) -> Au {
     rect.size.height
+}
+
+pub fn rectWidth(rect: Rect<Au>) -> Au {
+    rect.size.width
 }
 
 pub fn inherit(visit: |&mut layout::ftl_layout::FtlNode|, node: &mut layout::ftl_layout::FtlNode) {
