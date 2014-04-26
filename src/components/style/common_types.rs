@@ -4,6 +4,7 @@
 
 pub use servo_util::geometry::Au;
 
+
 pub type CSSFloat = f64;
 
 
@@ -52,7 +53,7 @@ pub mod specified {
         }
         pub fn parse_dimension(value: CSSFloat, unit: &str) -> Option<Length> {
             // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-            let unit_lower = unit.to_ascii_lower(); 
+            let unit_lower = unit.to_ascii_lower();
             match unit_lower.as_slice() {
                 "px" => Some(Length::from_px(value)),
                 "in" => Some(Au_(Au((value * AU_PER_IN) as i32))),
@@ -70,6 +71,16 @@ pub mod specified {
             Au_(Au((px_value * AU_PER_PX) as i32))
         }
     }
+
+    // impl fmt::Default for Length {
+    //     fn fmt(obj: &Length, f: &mut fmt::Formatter) {
+    //         match *obj {
+    //             Au_(au) =>      write!(f.buf, "{}", au),  // application units
+    //             Em(em) => write!(f.buf, "{}em", em),
+    //             Ex(ex) => write!(f.buf, "{}ex", ex),
+    //         }
+    //     }
+    // }
 
     #[deriving(Clone)]
     pub enum LengthOrPercentage {
@@ -165,6 +176,7 @@ pub mod computed {
     use super::*;
     use super::super::longhands;
     pub use servo_util::geometry::Au;
+    pub use std::fmt;
 
     pub struct Context {
         color: longhands::color::computed_value::T,
@@ -211,6 +223,14 @@ pub mod computed {
             specified::LP_Percentage(value) => LP_Percentage(value),
         }
     }
+    impl fmt::Default for LengthOrPercentage {
+        fn fmt(obj: &LengthOrPercentage, f: &mut fmt::Formatter) {
+            match *obj {
+                LP_Percentage(percent) => write!(f.buf, "{}%", percent),
+                LP_Length(length) => write!(f.buf, "{}", length)
+            }
+        }
+    }
 
     #[deriving(Eq, Clone)]
     pub enum LengthOrPercentageOrAuto {
@@ -224,6 +244,16 @@ pub mod computed {
             specified::LPA_Length(value) => LPA_Length(compute_Au(value, context)),
             specified::LPA_Percentage(value) => LPA_Percentage(value),
             specified::LPA_Auto => LPA_Auto,
+        }
+    }
+
+    impl fmt::Default for LengthOrPercentageOrAuto {
+        fn fmt(obj: &LengthOrPercentageOrAuto, f: &mut fmt::Formatter) {
+            match *obj {
+                LPA_Auto => write!(f.buf, "Auto"),
+                LPA_Percentage(percent) => write!(f.buf, "{}%", percent),
+                LPA_Length(length) => write!(f.buf, "{}", length)
+            }
         }
     }
 
