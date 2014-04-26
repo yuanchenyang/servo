@@ -1,6 +1,7 @@
 use std::hashmap::HashMap;
 use std::util;
 use std::cast;
+use std::fmt;
 use layout;
 use layout::model::MaybeAuto::;
 use layout::box_::Box;
@@ -8,8 +9,32 @@ use layout::flow::{Flow, BlockFlowClass,InlineFlowClass};
 use servo_util::geometry::Au;
 use extra::arc::Arc;
 use geom::{Point2D, Rect, SideOffsets2D, Size2D};
-use style::{ComputedValues};
-use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto};
+// use style::{ComputedValues};
+use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto, LengthOrPercentage};
+use computed = style::computed_values;
+
+
+// The root of the DOM tree, used by FTL
+// pub struct RootFlow {
+//     base: BaseFlow,
+//
+//     box_: Option<Box>,
+//
+//     ftl_attrs: layout::ftl_layout::RootFlowFtlAttrs,
+//
+//     screen_size: Rect<Au>
+// }
+//
+// impl RootFlow {
+//     pub fn from_layout_root(layout_root: Flow, ctx: &LayoutContext) -> RootFlow {
+//         RootFlow {
+//             base: flow::base(layout_root).clone(),
+//             box_: layout_root.box_,
+//             ftl_attrs: layout::ftl_layout::RootFlowFtlAttrs::new(),
+//             screen_size: ctx.screen_size
+//         }
+//     }
+// }
 
 pub fn isEven( num: int ) -> bool {
     num % 2 == 0
@@ -22,9 +47,9 @@ pub fn base<'a,I>(node: &'a mut layout::ftl_layout::FtlNode) -> &'a mut I {
     }
 }
 
-pub fn specAutoOrZero(length: LengthOrPercentageOrAuto) -> Au {
+pub fn specOrZero(length: LengthOrPercentageOrAuto, containing: Au) -> Au {
     //for b in flowbox.iter() {
-    MaybeAuto::from_style(length, Au::new(0)).specified_or_zero()
+    MaybeAuto::from_style(length, containing).specified_or_zero()
     //}
     //Au(0)
 }

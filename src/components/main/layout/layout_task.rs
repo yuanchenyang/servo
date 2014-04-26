@@ -14,6 +14,7 @@ use layout::context::LayoutContext;
 use layout::display_list_builder::{DisplayListBuilder, ToGfxColor};
 use layout::flow::{Flow, ImmutableFlowUtils, MutableFlowUtils, MutableOwnedFlowUtils};
 use layout::flow::{PreorderFlowTraversal, PostorderFlowTraversal};
+use layout::flow::{BlockFlowClass,InlineFlowClass};
 use layout::flow;
 use layout::incremental::RestyleDamage;
 use layout::parallel::PaddedUnsafeFlow;
@@ -437,10 +438,18 @@ impl LayoutTask {
         flow
     }
 
+    fn set_root_params(&mut self,
+                       layout_root: &mut Flow,
+                       layout_context: &mut LayoutContext)  {
+        let mut blockflow = layout_root.as_block();
+        blockflow.screenwidth = layout_context.screen_size.width;
+    }
+
     /// Performs layout constraint solving.
     ///
     /// This corresponds to `Reflow()` in Gecko and `layout()` in WebKit/Blink and should be
     /// benchmarked against those two. It is marked `#[inline(never)]` to aid profiling.
+
     #[inline(never)]
     fn solve_constraints(&mut self,
                          layout_root: &mut Flow,
@@ -620,6 +629,10 @@ impl LayoutTask {
         // });
 
         //self.solve_constraints(layout_root, &mut layout_ctx);
+
+        self.set_root_params(layout_root, &mut layout_ctx);
+
+        debug!("root position:{}", flow::base(layout_root).position);
 
         layout(as_ftl_node(layout_root));
 

@@ -59,6 +59,7 @@ pub struct BlockFlow {
     box_: Option<Box>,
 
     ftl_attrs: BlockFlowFtlAttrs,
+    screenwidth: Au,
 
     //TODO: is_fixed and is_root should be bit fields to conserve memory.
     /// Whether this block flow is the root flow.
@@ -77,6 +78,7 @@ impl BlockFlow {
             base: BaseFlow::new((*node).clone()),
             box_: Some(Box::new(constructor, node)),
             ftl_attrs: BlockFlowFtlAttrs::new(),
+            screenwidth: Au(0),
             is_root: false,
             is_fixed: is_fixed,
             float: None
@@ -91,6 +93,7 @@ impl BlockFlow {
             base: BaseFlow::new((*node).clone()),
             box_: Some(Box::new(constructor, node)),
             ftl_attrs: BlockFlowFtlAttrs::new(),
+            screenwidth: Au(0),
             is_root: false,
             is_fixed: false,
             float: Some(~FloatedBlockInfo::new(float_type))
@@ -102,6 +105,7 @@ impl BlockFlow {
             base: base,
             box_: None,
             ftl_attrs: BlockFlowFtlAttrs::new(),
+            screenwidth: Au(0),
             is_root: true,
             is_fixed: false,
             float: None
@@ -113,6 +117,7 @@ impl BlockFlow {
             base: base,
             box_: None,
             ftl_attrs: BlockFlowFtlAttrs::new(),
+            screenwidth: Au(0),
             is_root: false,
             is_fixed: false,
             float: Some(~FloatedBlockInfo::new(float_type))
@@ -577,6 +582,7 @@ impl BlockFlow {
                 }
             }
         };
+        debug!("relative offset: {}", rel_offset);
 
         // add box that starts block context
         for box_ in self.box_.iter() {
