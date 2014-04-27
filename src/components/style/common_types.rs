@@ -226,7 +226,7 @@ pub mod computed {
     impl fmt::Default for LengthOrPercentage {
         fn fmt(obj: &LengthOrPercentage, f: &mut fmt::Formatter) {
             match *obj {
-                LP_Percentage(percent) => write!(f.buf, "{}%", percent),
+                LP_Percentage(percent) => write!(f.buf, "{}%", percent * 100.0),
                 LP_Length(length) => write!(f.buf, "{}", length)
             }
         }
@@ -251,7 +251,7 @@ pub mod computed {
         fn fmt(obj: &LengthOrPercentageOrAuto, f: &mut fmt::Formatter) {
             match *obj {
                 LPA_Auto => write!(f.buf, "Auto"),
-                LPA_Percentage(percent) => write!(f.buf, "{}%", percent),
+                LPA_Percentage(percent) => write!(f.buf, "{}%", percent * 100.0),
                 LPA_Length(length) => write!(f.buf, "{}", length)
             }
         }
