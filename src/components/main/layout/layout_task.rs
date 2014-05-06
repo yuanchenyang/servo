@@ -14,7 +14,6 @@ use layout::context::LayoutContext;
 use layout::display_list_builder::{DisplayListBuilder, ToGfxColor};
 use layout::flow::{Flow, ImmutableFlowUtils, MutableFlowUtils, MutableOwnedFlowUtils};
 use layout::flow::{PreorderFlowTraversal, PostorderFlowTraversal};
-use layout::flow::{BlockFlowClass,InlineFlowClass};
 use layout::flow;
 use layout::incremental::RestyleDamage;
 use layout::parallel::PaddedUnsafeFlow;
@@ -441,7 +440,7 @@ impl LayoutTask {
     fn set_root_params(&mut self,
                        layout_root: &mut Flow,
                        layout_context: &mut LayoutContext)  {
-        let mut blockflow = layout_root.as_block();
+        let blockflow = layout_root.as_block();
         blockflow.screenwidth = layout_context.screen_size.width;
     }
 

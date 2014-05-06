@@ -1,18 +1,10 @@
-use std::hashmap::HashMap;
-use std::util;
 use std::cast;
-use std::fmt;
 use layout;
 use layout::model::MaybeAuto::;
-use layout::box_::Box;
 use layout::flow::{Flow, BlockFlowClass,InlineFlowClass};
 use servo_util::geometry::Au;
-use extra::arc::Arc;
-use geom::{Point2D, Rect, SideOffsets2D, Size2D};
-// use style::{ComputedValues};
-use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto, LengthOrPercentage};
-use computed = style::computed_values;
-
+use geom::{Point2D, Rect, Size2D};
+use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto};
 
 // The root of the DOM tree, used by FTL
 // pub struct RootFlow {
