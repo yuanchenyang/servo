@@ -682,10 +682,6 @@ impl LayoutTask {
         let mut lists = util::replace(&mut flow::mut_base(layout_root).ftl_attrs.lists,
                                       DisplayListCollection::<OpaqueNode>::new());
 
-        debug!("$$$$")
-        lists.dump();
-        debug!("$$$$")
-
         let lists = Arc::new(lists);
         let root_size = flow::base(layout_root).position.size;
 

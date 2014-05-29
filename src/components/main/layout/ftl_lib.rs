@@ -5,13 +5,14 @@ use layout;
 use layout::model::MaybeAuto::;
 use layout::box_::Box;
 use layout::flow::{Flow, BlockFlowClass,InlineFlowClass};
-use layout::display_list_builder::ExtraDisplayListData;
+use layout::display_list_builder::{ExtraDisplayListData,ToGfxColor};
+
 use servo_util::geometry::Au;
 use geom::{Point2D, Rect, Size2D, SideOffsets2D};
 use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto, border_style};
 use gfx::display_list::{DisplayListCollection, DisplayList, BaseDisplayItem,
                         BorderDisplayItem, BorderDisplayItemClass};
-use gfx::color::rgb;
+use gfx::display_list::{SolidColorDisplayItem, SolidColorDisplayItemClass};
 use layout::util::OpaqueNode;
 
 // The root of the DOM tree, used by FTL
@@ -103,6 +104,17 @@ pub fn extendCollection<E:ExtraDisplayListData>(collection: &mut DisplayListColl
 pub fn addBorder<E:ExtraDisplayListData>(list: &mut DisplayList<E>, box_: &Box,
                                          x: Au, y: Au, width: Au, height: Au,
                                          t: Au, r: Au, b: Au, l: Au) -> int {
+
+    let style = box_.style();
+    let top_color = style.resolve_color(style.Border.get().border_top_color);
+    let right_color = style.resolve_color(style.Border.get().border_right_color);
+    let bottom_color = style.resolve_color(style.Border.get().border_bottom_color);
+    let left_color = style.resolve_color(style.Border.get().border_left_color);
+    let top_style = style.Border.get().border_top_style;
+    let right_style = style.Border.get().border_right_style;
+    let bottom_style = style.Border.get().border_bottom_style;
+    let left_style = style.Border.get().border_left_style;
+
     let border = SideOffsets2D::new(t, r, b, l);
     let border_display_item = ~BorderDisplayItem {
         base: BaseDisplayItem {
@@ -110,11 +122,33 @@ pub fn addBorder<E:ExtraDisplayListData>(list: &mut DisplayList<E>, box_: &Box,
             extra: ExtraDisplayListData::new(box_),
         },
         border: border,
-        color: SideOffsets2D::new_all_same(rgb(0, 0, 200)),
-        style: SideOffsets2D::new_all_same(border_style::solid)
-
+        color: SideOffsets2D::new(top_color.to_gfx_color(),
+                                  right_color.to_gfx_color(),
+                                  bottom_color.to_gfx_color(),
+                                  left_color.to_gfx_color()),
+        style: SideOffsets2D::new(top_style,
+                                  right_style,
+                                  bottom_style,
+                                  left_style)
     };
     list.append_item(BorderDisplayItemClass(border_display_item));
+    1
+}
+
+pub fn addBackground<E:ExtraDisplayListData>(list: &mut DisplayList<E>, box_: &Box,
+                                             x: Au, y: Au, width: Au, height: Au) -> int {
+    let style = box_.style();
+    let background_color = style.resolve_color(style.Background.get().background_color);
+    if !background_color.alpha.approx_eq(&0.0) {
+        let solid_color_display_item = ~SolidColorDisplayItem {
+            base: BaseDisplayItem {
+                bounds: makeRect(x, y, width, height),
+                extra: ExtraDisplayListData::new(box_),
+            },
+            color: background_color.to_gfx_color(),
+        };
+        list.append_item(SolidColorDisplayItemClass(solid_color_display_item));
+    }
     1
 }
 
