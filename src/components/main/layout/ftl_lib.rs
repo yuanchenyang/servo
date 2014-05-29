@@ -1,10 +1,18 @@
 use std::cast;
+use std::cell::RefCell;
+use std::util;
 use layout;
 use layout::model::MaybeAuto::;
+use layout::box_::Box;
 use layout::flow::{Flow, BlockFlowClass,InlineFlowClass};
+use layout::display_list_builder::ExtraDisplayListData;
 use servo_util::geometry::Au;
-use geom::{Point2D, Rect, Size2D};
-use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto};
+use geom::{Point2D, Rect, Size2D, SideOffsets2D};
+use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto, border_style};
+use gfx::display_list::{DisplayListCollection, DisplayList, BaseDisplayItem,
+                        BorderDisplayItem, BorderDisplayItemClass};
+use gfx::color::rgb;
+use layout::util::OpaqueNode;
 
 // The root of the DOM tree, used by FTL
 // pub struct RootFlow {
@@ -27,6 +35,9 @@ use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto};
 //         }
 //     }
 // }
+
+pub type DLCE = DisplayListCollection<OpaqueNode>;
+pub type DLE = DisplayList<OpaqueNode>;
 
 pub fn isEven( num: int ) -> bool {
     num % 2 == 0
@@ -65,6 +76,46 @@ pub fn max (a : Au, b : Au) -> Au {
     } else {
         b
     }
+}
+
+pub fn newDisplayList() -> DLE {
+    DisplayList::<OpaqueNode>::new()
+}
+
+pub fn newDisplayListCollection() -> DLCE {
+    DisplayListCollection::<OpaqueNode>::new()
+}
+
+pub fn extendLists<E:ExtraDisplayListData>(collection: &mut DisplayListCollection<E>,
+                                           list: &mut DisplayList<E>) -> int {
+    collection.add_list(util::replace(list, DisplayList::<E>::new()));
+    1
+}
+
+pub fn extendCollection<E:ExtraDisplayListData>(collection: &mut DisplayListCollection<E>,
+                                                childCollection: &mut DisplayListCollection<E>) -> int {
+    for list in childCollection.lists.mut_iter() {
+        extendLists(collection, list);
+    }
+    1
+}
+
+pub fn addBorder<E:ExtraDisplayListData>(list: &mut DisplayList<E>, box_: &Box,
+                                         x: Au, y: Au, width: Au, height: Au,
+                                         t: Au, r: Au, b: Au, l: Au) -> int {
+    let border = SideOffsets2D::new(t, r, b, l);
+    let border_display_item = ~BorderDisplayItem {
+        base: BaseDisplayItem {
+            bounds: makeRect(x, y, width, height),
+            extra: ExtraDisplayListData::new(box_),
+        },
+        border: border,
+        color: SideOffsets2D::new_all_same(rgb(0, 0, 200)),
+        style: SideOffsets2D::new_all_same(border_style::solid)
+
+    };
+    list.append_item(BorderDisplayItemClass(border_display_item));
+    1
 }
 
 pub fn rectHeight(rect: Rect<Au>) -> Au {

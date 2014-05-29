@@ -11,7 +11,7 @@ use css::select::new_stylist;
 use css::node_style::StyledNode;
 use layout::construct::{FlowConstructionResult, NoConstructionResult};
 use layout::context::LayoutContext;
-use layout::display_list_builder::{DisplayListBuilder, ToGfxColor};
+use layout::display_list_builder::{DisplayListBuilder, ToGfxColor,Nothing};
 use layout::flow::{Flow, ImmutableFlowUtils, MutableFlowUtils, MutableOwnedFlowUtils};
 use layout::flow::{PreorderFlowTraversal, PostorderFlowTraversal};
 use layout::flow;
@@ -23,8 +23,11 @@ use layout::wrapper::{LayoutNode, TLayoutNode, ThreadSafeLayoutNode};
 
 use extra::url::Url;
 use extra::arc::{Arc, MutexArc};
+use geom::{Point2D, Rect, SideOffsets2D};
 use geom::rect::Rect;
-use geom::size::Size2D;
+use geom::size::{Size2D};
+use gfx::color::rgb;
+use gfx::display_list::{BaseDisplayItem, BorderDisplayItem, BorderDisplayItemClass};
 use gfx::display_list::{ClipDisplayItemClass, DisplayItem, DisplayItemIterator};
 use gfx::display_list::{DisplayList, DisplayListCollection};
 use gfx::font_context::{FontContext, FontContextInfo};
@@ -58,6 +61,7 @@ use std::ptr;
 use std::task;
 use std::util;
 use style::{AuthorOrigin, ComputedValues, Stylesheet, Stylist};
+use style::computed_values::{border_style};
 use style;
 
 // use layout::libftl::PrintInfoTraversal;
@@ -442,6 +446,8 @@ impl LayoutTask {
                        layout_context: &mut LayoutContext)  {
         let blockflow = layout_root.as_block();
         blockflow.screenwidth = layout_context.screen_size.width;
+        // ,lists: RefCell<DisplayListCollection<OpaqueNode>>
+        //blockflow.list_collection = Some(lists);
     }
 
     /// Performs layout constraint solving.
@@ -629,6 +635,10 @@ impl LayoutTask {
 
         //self.solve_constraints(layout_root, &mut layout_ctx);
 
+        //let mut lists = DisplayListCollection::<OpaqueNode>::new();
+        //lists.add_list(DisplayList::<OpaqueNode>::new());
+        //let lists = RefCell::new(lists);
+
         self.set_root_params(layout_root, &mut layout_ctx);
 
         debug!("root position:{}", flow::base(layout_root).position);
@@ -637,62 +647,120 @@ impl LayoutTask {
 
         debug!("Finished FTL");
 
+        /*
+
+        lists.with_mut(|lists| {
+            let debug_border = SideOffsets2D::new_all_same(Au::from_px(1));
+            let border_display_item = ~BorderDisplayItem {
+                base: BaseDisplayItem {
+                    bounds: Rect(Point2D(Au(0), Au(0)), Size2D(Au(10000), Au(10000))),
+                    extra: OpaqueNode(0),
+                },
+                border: debug_border,
+                color: SideOffsets2D::new_all_same(rgb(0, 0, 200)),
+                style: SideOffsets2D::new_all_same(border_style::solid)
+
+            };
+
+            let border_display_item2 = ~BorderDisplayItem {
+                base: BaseDisplayItem {
+                    bounds: Rect(Point2D(Au(5000), Au(5000)), Size2D(Au(10000), Au(10000))),
+                    extra: OpaqueNode(0),
+                },
+                border: debug_border,
+                color: SideOffsets2D::new_all_same(rgb(0, 0, 200)),
+                style: SideOffsets2D::new_all_same(border_style::solid)
+
+            };
+            lists.lists[0].append_item(BorderDisplayItemClass(border_display_item));
+            lists.lists[0].append_item(BorderDisplayItemClass(border_display_item2));
+        });
+         */
+
+        let mut color = color::rgba(255.0, 255.0, 255.0, 255.0);
+
+        let mut lists = util::replace(&mut flow::mut_base(layout_root).ftl_attrs.lists,
+                                      DisplayListCollection::<OpaqueNode>::new());
+
+        debug!("$$$$")
+        lists.dump();
+        debug!("$$$$")
+
+        let lists = Arc::new(lists);
+        let root_size = flow::base(layout_root).position.size;
+
+        let render_layer = RenderLayer {
+            display_list_collection: lists.clone(),
+            size: Size2D(root_size.width.to_nearest_px() as uint,
+                         root_size.height.to_nearest_px() as uint),
+            color: color
+        };
+
+
+        debug!("Layout done!");
+
+        self.display_list_collection = Some(lists.clone());
+
+        self.render_chan.send(RenderMsg(render_layer));
+
+
+
         // Build the display list if necessary, and send it to the renderer.
-        if data.goal == ReflowForDisplay {
-            debug!("Started display");
-            profile(time::LayoutDispListBuildCategory, self.profiler_chan.clone(), || {
-                let root_size = flow::base(layout_root).position.size;
-                let mut display_list_collection = DisplayListCollection::new();
-                display_list_collection.add_list(DisplayList::<OpaqueNode>::new());
-                let display_list_collection = ~RefCell::new(display_list_collection);
-                let dirty = flow::base(layout_root).position.clone();
-                let display_list_builder = DisplayListBuilder {
-                    ctx: &layout_ctx,
-                };
-                layout_root.build_display_lists(&display_list_builder, &root_size, &dirty, 0u, display_list_collection);
-
-                let display_list_collection = Arc::new(display_list_collection.unwrap());
-
-                let mut color = color::rgba(255.0, 255.0, 255.0, 255.0);
-
-                for child in node.traverse_preorder() {
-                    if child.type_id() == ElementNodeTypeId(HTMLHtmlElementTypeId) ||
-                            child.type_id() == ElementNodeTypeId(HTMLBodyElementTypeId) {
-                        let element_bg_color = {
-                            let thread_safe_child = ThreadSafeLayoutNode::new(&child);
-                            thread_safe_child.style()
-                                             .get()
-                                             .resolve_color(thread_safe_child.style()
-                                                                             .get()
-                                                                             .Background
-                                                                             .get()
-                                                                             .background_color)
-                                             .to_gfx_color()
-                        };
-                        match element_bg_color {
-                            color::rgba(0., 0., 0., 0.) => {}
-                            _ => {
-                                color = element_bg_color;
-                                break;
-                           }
-                        }
-                    }
-                }
-
-                let render_layer = RenderLayer {
-                    display_list_collection: display_list_collection.clone(),
-                    size: Size2D(root_size.width.to_nearest_px() as uint,
-                                 root_size.height.to_nearest_px() as uint),
-                    color: color
-                };
-
-                self.display_list_collection = Some(display_list_collection.clone());
-
-                debug!("Layout done!");
-
-                self.render_chan.send(RenderMsg(render_layer));
-            });
-        }
+        // if data.goal == ReflowForDisplay {
+        //     debug!("Started display");
+        //     profile(time::LayoutDispListBuildCategory, self.profiler_chan.clone(), || {
+        //         let root_size = flow::base(layout_root).position.size;
+        //         let mut display_list_collection = DisplayListCollection::new();
+        //         display_list_collection.add_list(DisplayList::<OpaqueNode>::new());
+        //         let display_list_collection = ~RefCell::new(display_list_collection);
+        //         let dirty = flow::base(layout_root).position.clone();
+        //         let display_list_builder = DisplayListBuilder {
+        //             ctx: &layout_ctx,
+        //         };
+        //         layout_root.build_display_lists(&display_list_builder, &root_size, &dirty, 0u, display_list_collection);
+        //
+        //         let display_list_collection = Arc::new(display_list_collection.unwrap());
+        //
+        //         let mut color = color::rgba(255.0, 255.0, 255.0, 255.0);
+        //
+        //         for child in node.traverse_preorder() {
+        //             if child.type_id() == ElementNodeTypeId(HTMLHtmlElementTypeId) ||
+        //                     child.type_id() == ElementNodeTypeId(HTMLBodyElementTypeId) {
+        //                 let element_bg_color = {
+        //                     let thread_safe_child = ThreadSafeLayoutNode::new(&child);
+        //                     thread_safe_child.style()
+        //                                      .get()
+        //                                      .resolve_color(thread_safe_child.style()
+        //                                                                      .get()
+        //                                                                      .Background
+        //                                                                      .get()
+        //                                                                      .background_color)
+        //                                      .to_gfx_color()
+        //                 };
+        //                 match element_bg_color {
+        //                     color::rgba(0., 0., 0., 0.) => {}
+        //                     _ => {
+        //                         color = element_bg_color;
+        //                         break;
+        //                    }
+        //                 }
+        //             }
+        //         }
+        //
+        //         let render_layer = RenderLayer {
+        //             display_list_collection: display_list_collection.clone(),
+        //             size: Size2D(root_size.width.to_nearest_px() as uint,
+        //                          root_size.height.to_nearest_px() as uint),
+        //             color: color
+        //         };
+        //
+        //         self.display_list_collection = Some(display_list_collection.clone());
+        //
+        //         debug!("Layout done!");
+        //
+        //         self.render_chan.send(RenderMsg(render_layer));
+        //     });
+        // }
 
         debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
 

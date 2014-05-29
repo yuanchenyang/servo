@@ -63,6 +63,8 @@ impl<E> DisplayListCollection<E> {
     }
 }
 
+
+
 /// A list of rendering operations to be performed.
 pub struct DisplayList<E> {
     list: ~[DisplayItem<E>]
@@ -376,4 +378,3 @@ impl<E> DisplayItem<E> {
         format!("{} @ {:?}", class, self.base().bounds)
     }
 }
-
