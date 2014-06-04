@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLHeadElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLHeadElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLHeadElementDerived;
-use dom::bindings::js::JS;
+use dom::bindings::js::{JSRef, Temporary};
 use dom::document::Document;
 use dom::element::HTMLHeadElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -14,27 +14,27 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLHeadElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLHeadElementDerived for EventTarget {
     fn is_htmlheadelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLHeadElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLHeadElementTypeId))
     }
 }
 
 impl HTMLHeadElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLHeadElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLHeadElement {
         HTMLHeadElement {
             htmlelement: HTMLElement::new_inherited(HTMLHeadElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLHeadElement> {
-        let element = HTMLHeadElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLHeadElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLHeadElement> {
+        let element = HTMLHeadElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLHeadElementBinding::Wrap)
     }
+}
+
+pub trait HTMLHeadElementMethods {
 }

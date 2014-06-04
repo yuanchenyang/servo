@@ -2,29 +2,33 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use text::glyph::CharIndex;
+
 #[deriving(Eq)]
-enum CompressionMode {
+pub enum CompressionMode {
     CompressNone,
     CompressWhitespace,
     CompressWhitespaceNewline,
     DiscardNewline
 }
 
-// ported from Gecko's nsTextFrameUtils::TransformText. 
-// 
+// ported from Gecko's nsTextFrameUtils::TransformText.
+//
 // High level TODOs:
 //
 // * Issue #113: consider incoming text state (arabic, etc)
-//               and propogate outgoing text state (dual of above) 
+//               and propogate outgoing text state (dual of above)
 //
 // * Issue #114: record skipped and kept chars for mapping original to new text
 //
 // * Untracked: various edge cases for bidi, CJK, etc.
-pub fn transform_text(text: &str, mode: CompressionMode, incoming_whitespace: bool, new_line_pos: &mut ~[uint]) -> (~str, bool) {
-    let mut out_str: ~str = ~"";
+pub fn transform_text(text: &str, mode: CompressionMode,
+                      incoming_whitespace: bool,
+                      new_line_pos: &mut Vec<CharIndex>) -> (~str, bool) {
+    let mut out_str = StrBuf::new();
     let out_whitespace = match mode {
         CompressNone | DiscardNewline => {
-            let mut new_line_index = 0;
+            let mut new_line_index = CharIndex(0);
             for ch in text.chars() {
                 if is_discardable_char(ch, mode) {
                     // TODO: record skipped char
@@ -36,13 +40,13 @@ pub fn transform_text(text: &str, mode: CompressionMode, incoming_whitespace: bo
                         // Save new-line's position for line-break
                         // This value is relative(not absolute)
                         new_line_pos.push(new_line_index);
-                        new_line_index = 0;
+                        new_line_index = CharIndex(0);
                     }
 
                     if ch != '\n' {
-                        new_line_index += 1;
+                        new_line_index = new_line_index + CharIndex(1);
                     }
-                    out_str.push_char(ch);                        
+                    out_str.push_char(ch);
                 }
             }
             text.len() > 0 && is_in_whitespace(text.char_at_reverse(0), mode)
@@ -53,7 +57,7 @@ pub fn transform_text(text: &str, mode: CompressionMode, incoming_whitespace: bo
             for ch in text.chars() {
                 // TODO: discard newlines between CJK chars
                 let mut next_in_whitespace: bool = is_in_whitespace(ch, mode);
-                
+
                 if !next_in_whitespace {
                     if is_always_discardable_char(ch) {
                         // revert whitespace setting, since this char was discarded
@@ -75,10 +79,10 @@ pub fn transform_text(text: &str, mode: CompressionMode, incoming_whitespace: bo
                 in_whitespace = next_in_whitespace;
             } /* /for str::each_char */
             in_whitespace
-        } 
+        }
     };
 
-    return (out_str, out_whitespace);
+    return (out_str.into_owned(), out_whitespace);
 
     fn is_in_whitespace(ch: char, mode: CompressionMode) -> bool {
         match (ch, mode) {
@@ -138,70 +142,74 @@ fn test_true_type_tag() {
 
 #[test]
 fn test_transform_compress_none() {
-
-    let  test_strs : ~[~str] = ~[~"  foo bar",
-                                 ~"foo bar  ",
-                                 ~"foo\n bar",
-                                 ~"foo \nbar",
-                                 ~"  foo  bar  \nbaz",
-                                 ~"foo bar baz",
-                                 ~"foobarbaz\n\n"];
+    let test_strs = vec!(
+        "  foo bar",
+        "foo bar  ",
+        "foo\n bar",
+        "foo \nbar",
+        "  foo  bar  \nbaz",
+        "foo bar baz",
+        "foobarbaz\n\n"
+    );
     let mode = CompressNone;
 
-    for i in range(0, test_strs.len()) {
-        let mut new_line_pos = ~[];
-        let (trimmed_str, _out) = transform_text(test_strs[i], mode, true, &mut new_line_pos);
-        assert_eq!(&trimmed_str, &test_strs[i])
+    for test in test_strs.iter() {
+        let mut new_line_pos = vec!();
+        let (trimmed_str, _out) = transform_text(*test, mode, true, &mut new_line_pos);
+        assert_eq!(trimmed_str.as_slice(), *test)
     }
 }
 
 #[test]
 fn test_transform_discard_newline() {
+    let test_strs = vec!(
+        "  foo bar",
+        "foo bar  ",
+        "foo\n bar",
+        "foo \nbar",
+        "  foo  bar  \nbaz",
+        "foo bar baz",
+        "foobarbaz\n\n"
+    );
 
-    let  test_strs : ~[~str] = ~[~"  foo bar",
-                                 ~"foo bar  ",
-                                 ~"foo\n bar",
-                                 ~"foo \nbar",
-                                 ~"  foo  bar  \nbaz",
-                                 ~"foo bar baz",
-                                 ~"foobarbaz\n\n"];
-
-    let  oracle_strs : ~[~str] = ~[~"  foo bar",
-                                   ~"foo bar  ",
-                                   ~"foo bar",
-                                   ~"foo bar",
-                                   ~"  foo  bar  baz",
-                                   ~"foo bar baz",
-                                   ~"foobarbaz"];
+    let oracle_strs = vec!(
+        "  foo bar",
+        "foo bar  ",
+        "foo bar",
+        "foo bar",
+        "  foo  bar  baz",
+        "foo bar baz",
+        "foobarbaz"
+    );
 
     assert_eq!(test_strs.len(), oracle_strs.len());
     let mode = DiscardNewline;
 
-    for i in range(0, test_strs.len()) {
-        let mut new_line_pos = ~[];
-        let (trimmed_str, _out) = transform_text(test_strs[i], mode, true, &mut new_line_pos);
-        assert_eq!(&trimmed_str, &oracle_strs[i])
+    for (test, oracle) in test_strs.iter().zip(oracle_strs.iter()) {
+        let mut new_line_pos = vec!();
+        let (trimmed_str, _out) = transform_text(*test, mode, true, &mut new_line_pos);
+        assert_eq!(trimmed_str.as_slice(), *oracle)
     }
 }
 
 /* FIXME: Fix and re-enable
 #[test]
 fn test_transform_compress_whitespace() {
-    let  test_strs : ~[~str] = ~[~"  foo bar",
-                                 ~"foo bar  ",
-                                 ~"foo\n bar",
-                                 ~"foo \nbar",
-                                 ~"  foo  bar  \nbaz",
-                                 ~"foo bar baz",
-                                 ~"foobarbaz\n\n"];
+    let  test_strs : ~[~str] = ~["  foo bar".to_owned(),
+                                 "foo bar  ".to_owned(),
+                                 "foo\n bar".to_owned(),
+                                 "foo \nbar".to_owned(),
+                                 "  foo  bar  \nbaz".to_owned(),
+                                 "foo bar baz".to_owned(),
+                                 "foobarbaz\n\n".to_owned()];
 
-    let oracle_strs : ~[~str] = ~[~" foo bar",
-                                 ~"foo bar ",
-                                 ~"foo\n bar",
-                                 ~"foo \nbar",
-                                 ~" foo bar \nbaz",
-                                 ~"foo bar baz",
-                                 ~"foobarbaz\n\n"];
+    let oracle_strs : ~[~str] = ~[" foo bar".to_owned(),
+                                 "foo bar ".to_owned(),
+                                 "foo\n bar".to_owned(),
+                                 "foo \nbar".to_owned(),
+                                 " foo bar \nbaz".to_owned(),
+                                 "foo bar baz".to_owned(),
+                                 "foobarbaz\n\n".to_owned()];
 
     assert_eq!(test_strs.len(), oracle_strs.len());
     let mode = CompressWhitespace;
@@ -215,21 +223,21 @@ fn test_transform_compress_whitespace() {
 
 #[test]
 fn test_transform_compress_whitespace_newline() {
-    let  test_strs : ~[~str] = ~[~"  foo bar",
-                                 ~"foo bar  ",
-                                 ~"foo\n bar",
-                                 ~"foo \nbar",
-                                 ~"  foo  bar  \nbaz",
-                                 ~"foo bar baz",
-                                 ~"foobarbaz\n\n"];
+    let  test_strs : ~[~str] = ~["  foo bar".to_owned(),
+                                 "foo bar  ".to_owned(),
+                                 "foo\n bar".to_owned(),
+                                 "foo \nbar".to_owned(),
+                                 "  foo  bar  \nbaz".to_owned(),
+                                 "foo bar baz".to_owned(),
+                                 "foobarbaz\n\n".to_owned()];
 
-    let oracle_strs : ~[~str] = ~[~"foo bar",
-                                 ~"foo bar ",
-                                 ~"foo bar",
-                                 ~"foo bar",
-                                 ~" foo bar baz",
-                                 ~"foo bar baz",
-                                 ~"foobarbaz "];
+    let oracle_strs : ~[~str] = ~["foo bar".to_owned(),
+                                 "foo bar ".to_owned(),
+                                 "foo bar".to_owned(),
+                                 "foo bar".to_owned(),
+                                 " foo bar baz".to_owned(),
+                                 "foo bar baz".to_owned(),
+                                 "foobarbaz ".to_owned()];
 
     assert_eq!(test_strs.len(), oracle_strs.len());
     let mode = CompressWhitespaceNewline;
@@ -244,30 +252,34 @@ fn test_transform_compress_whitespace_newline() {
 
 #[test]
 fn test_transform_compress_whitespace_newline_no_incoming() {
-    let  test_strs : ~[~str] = ~[~"  foo bar",
-                                 ~"\nfoo bar",
-                                 ~"foo bar  ",
-                                 ~"foo\n bar",
-                                 ~"foo \nbar",
-                                 ~"  foo  bar  \nbaz",
-                                 ~"foo bar baz",
-                                 ~"foobarbaz\n\n"];
+    let test_strs = vec!(
+        "  foo bar",
+        "\nfoo bar",
+        "foo bar  ",
+        "foo\n bar",
+        "foo \nbar",
+        "  foo  bar  \nbaz",
+        "foo bar baz",
+        "foobarbaz\n\n"
+    );
 
-    let oracle_strs : ~[~str] = ~[~" foo bar",
-                                 ~" foo bar",
-                                 ~"foo bar ",
-                                 ~"foo bar",
-                                 ~"foo bar",
-                                 ~" foo bar baz",
-                                 ~"foo bar baz",
-                                 ~"foobarbaz "];
+    let oracle_strs = vec!(
+        " foo bar",
+        " foo bar",
+        "foo bar ",
+        "foo bar",
+        "foo bar",
+        " foo bar baz",
+        "foo bar baz",
+        "foobarbaz "
+    );
 
     assert_eq!(test_strs.len(), oracle_strs.len());
     let mode = CompressWhitespaceNewline;
 
-    for i in range(0, test_strs.len()) {
-        let mut new_line_pos = ~[];
-        let (trimmed_str, _out) = transform_text(test_strs[i], mode, false, &mut new_line_pos);
-        assert_eq!(&trimmed_str, &oracle_strs[i])
+    for (test, oracle) in test_strs.iter().zip(oracle_strs.iter()) {
+        let mut new_line_pos = vec!();
+        let (trimmed_str, _out) = transform_text(*test, mode, false, &mut new_line_pos);
+        assert_eq!(trimmed_str.as_slice(), *oracle)
     }
 }

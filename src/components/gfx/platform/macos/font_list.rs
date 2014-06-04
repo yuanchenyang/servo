@@ -7,12 +7,12 @@ use font_list::{FontEntry, FontFamily, FontFamilyMap};
 use platform::macos::font::FontHandle;
 use platform::macos::font_context::FontContextHandle;
 
+use collections::hashmap::HashMap;
 use core_foundation::base::TCFType;
 use core_foundation::string::{CFString, CFStringRef};
 use core_text::font_descriptor::{CTFontDescriptor, CTFontDescriptorRef};
 use core_text;
 use std::cast;
-use std::hashmap::HashMap;
 
 pub struct FontListHandle {
     fctx: FontContextHandle,
@@ -58,7 +58,7 @@ impl FontListHandle {
         }
     }
 
-    pub fn get_last_resort_font_families() -> ~[~str] {
-        ~[~"Arial Unicode MS",~"Arial"]
+    pub fn get_last_resort_font_families() -> Vec<~str> {
+        vec!("Arial Unicode MS".to_owned(), "Arial".to_owned())
     }
 }

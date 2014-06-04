@@ -4,92 +4,84 @@
 
 use image::base::{Image, load_from_memory};
 use resource_task;
-use resource_task::ResourceTask;
+use resource_task::{LoadData, ResourceTask};
 use servo_util::url::{UrlMap, url_map};
 
-use std::comm::{Chan, Port, SharedChan};
+use std::comm::{channel, Receiver, Sender};
+use std::mem::replace;
 use std::task::spawn;
 use std::to_str::ToStr;
-use std::util::replace;
 use std::result;
-use extra::arc::{Arc,MutexArc};
-use extra::url::Url;
-use extra::serialize::{Encoder, Encodable};
+use sync::{Arc, Mutex};
+use serialize::{Encoder, Encodable};
+use url::Url;
 
 pub enum Msg {
     /// Tell the cache that we may need a particular image soon. Must be posted
     /// before Decode
     Prefetch(Url),
 
-    // FIXME: We can probably get rid of this Cell now
-    // FIXME: make this priv after visibility rules change
-    /// Used be the prefetch tasks to post back image binaries
-    StorePrefetchedImageData(Url, Result<~[u8], ()>),
-
     /// Tell the cache to decode an image. Must be posted before GetImage/WaitForImage
     Decode(Url),
 
-    /// Used by the decoder tasks to post decoded images back to the cache
-    // FIXME: make this priv after visibility rules change
-    StoreImage(Url, Option<Arc<~Image>>),
-
     /// Request an Image object for a URL. If the image is not is not immediately
     /// available then ImageNotReady is returned.
-    GetImage(Url, Chan<ImageResponseMsg>),
+    GetImage(Url, Sender<ImageResponseMsg>),
 
     /// Wait for an image to become available (or fail to load).
-    WaitForImage(Url, Chan<ImageResponseMsg>),
+    WaitForImage(Url, Sender<ImageResponseMsg>),
 
     /// Clients must wait for a response before shutting down the ResourceTask
-    Exit(Chan<()>),
+    Exit(Sender<()>),
+
+    // FIXME: We can probably get rid of this Cell now
+    /// Used be the prefetch tasks to post back image binaries
+    StorePrefetchedImageData(Url, Result<~[u8], ()>),
+
+    /// Used by the decoder tasks to post decoded images back to the cache
+    StoreImage(Url, Option<Arc<Box<Image>>>),
 
     /// For testing
-    // FIXME: make this priv after visibility rules change
-    WaitForStore(Chan<()>),
+    WaitForStore(Sender<()>),
 
     /// For testing
-    // FIXME: make this priv after visibility rules change
-    WaitForStorePrefetched(Chan<()>),
+    WaitForStorePrefetched(Sender<()>),
 }
 
 #[deriving(Clone)]
 pub enum ImageResponseMsg {
-    ImageReady(Arc<~Image>),
+    ImageReady(Arc<Box<Image>>),
     ImageNotReady,
     ImageFailed
 }
 
 impl Eq for ImageResponseMsg {
     fn eq(&self, other: &ImageResponseMsg) -> bool {
-        // FIXME: Bad copies
-        match (self.clone(), other.clone()) {
-            (ImageReady(..), ImageReady(..)) => fail!(~"unimplemented comparison"),
-            (ImageNotReady, ImageNotReady) => true,
-            (ImageFailed, ImageFailed) => true,
+        match (self, other) {
+            (&ImageReady(..), &ImageReady(..)) => fail!("unimplemented comparison"),
+            (&ImageNotReady, &ImageNotReady) => true,
+            (&ImageFailed, &ImageFailed) => true,
 
-            (ImageReady(..), _) | (ImageNotReady, _) | (ImageFailed, _) => false
+            (&ImageReady(..), _) | (&ImageNotReady, _) | (&ImageFailed, _) => false
         }
-    }
-
-    fn ne(&self, other: &ImageResponseMsg) -> bool {
-        !(*self).eq(other)
     }
 }
 
 #[deriving(Clone)]
 pub struct ImageCacheTask {
-    chan: SharedChan<Msg>,
+    chan: Sender<Msg>,
 }
 
-impl<S: Encoder> Encodable<S> for ImageCacheTask {
-    fn encode(&self, _: &mut S) {
+impl<E, S: Encoder<E>> Encodable<S, E> for ImageCacheTask {
+    fn encode(&self, _: &mut S) -> Result<(), E> {
+        Ok(())
     }
 }
 
 type DecoderFactory = fn() -> proc(&[u8]) -> Option<Image>;
 
 pub fn ImageCacheTask(resource_task: ResourceTask) -> ImageCacheTask {
-    let (port, chan) = SharedChan::new();
+    let (chan, port) = channel();
     let chan_clone = chan.clone();
 
     spawn(proc() {
@@ -111,7 +103,7 @@ pub fn ImageCacheTask(resource_task: ResourceTask) -> ImageCacheTask {
 
 // FIXME: make this priv after visibility rules change
 pub fn SyncImageCacheTask(resource_task: ResourceTask) -> ImageCacheTask {
-    let (port, chan) = SharedChan::new();
+    let (chan, port) = channel();
 
     spawn(proc() {
         let inner_cache = ImageCacheTask(resource_task.clone());
@@ -141,14 +133,14 @@ struct ImageCache {
     /// A handle to the resource task for fetching the image binaries
     resource_task: ResourceTask,
     /// The port on which we'll receive client requests
-    port: Port<Msg>,
+    port: Receiver<Msg>,
     /// A copy of the shared chan to give to child tasks
-    chan: SharedChan<Msg>,
+    chan: Sender<Msg>,
     /// The state of processsing an image for a URL
     state_map: UrlMap<ImageState>,
     /// List of clients waiting on a WaitForImage response
-    wait_map: UrlMap<MutexArc<~[Chan<ImageResponseMsg>]>>,
-    need_exit: Option<Chan<()>>,
+    wait_map: UrlMap<Arc<Mutex<Vec<Sender<ImageResponseMsg>>>>>,
+    need_exit: Option<Sender<()>>,
 }
 
 #[deriving(Clone)]
@@ -157,7 +149,7 @@ enum ImageState {
     Prefetching(AfterPrefetch),
     Prefetched(~[u8]),
     Decoding,
-    Decoded(Arc<~Image>),
+    Decoded(Arc<Box<Image>>),
     Failed
 }
 
@@ -169,8 +161,8 @@ enum AfterPrefetch {
 
 impl ImageCache {
     pub fn run(&mut self) {
-        let mut store_chan: Option<Chan<()>> = None;
-        let mut store_prefetched_chan: Option<Chan<()>> = None;
+        let mut store_chan: Option<Sender<()>> = None;
+        let mut store_prefetched_chan: Option<Sender<()>> = None;
 
         loop {
             let msg = self.port.recv();
@@ -301,14 +293,14 @@ impl ImageCache {
           | Decoding
           | Decoded(..)
           | Failed => {
-            fail!(~"wrong state for storing prefetched image")
+            fail!("wrong state for storing prefetched image")
           }
         }
     }
 
     fn decode(&mut self, url: Url) {
         match self.get_state(url.clone()) {
-            Init => fail!(~"decoding image before prefetch"),
+            Init => fail!("decoding image before prefetch"),
 
             Prefetching(DoNotDecode) => {
                 // We don't have the data yet, queue up the decode
@@ -328,7 +320,7 @@ impl ImageCache {
                     debug!("image_cache_task: started image decode for {:s}", url.to_str());
                     let image = load_from_memory(data);
                     let image = if image.is_some() {
-                        Some(Arc::new(~image.unwrap()))
+                        Some(Arc::new(box image.unwrap()))
                     } else {
                         None
                     };
@@ -345,7 +337,7 @@ impl ImageCache {
         }
     }
 
-    fn store_image(&mut self, url: Url, image: Option<Arc<~Image>>) {
+    fn store_image(&mut self, url: Url, image: Option<Arc<Box<Image>>>) {
 
         match self.get_state(url.clone()) {
           Decoding => {
@@ -366,7 +358,7 @@ impl ImageCache {
           | Prefetched(..)
           | Decoded(..)
           | Failed => {
-            fail!(~"incorrect state in store_image")
+            fail!("incorrect state in store_image")
           }
         }
 
@@ -375,45 +367,43 @@ impl ImageCache {
     fn purge_waiters(&mut self, url: Url, f: || -> ImageResponseMsg) {
         match self.wait_map.pop(&url) {
             Some(waiters) => {
-                unsafe {
-                    waiters.unsafe_access(|waiters| {
-                        for response in waiters.iter() {
-                            response.send(f());
-                        }
-                    });
+                let mut items = waiters.lock();
+                for response in items.iter() {
+                    response.send(f());
                 }
             }
             None => ()
         }
     }
 
-    fn get_image(&self, url: Url, response: Chan<ImageResponseMsg>) {
+    fn get_image(&self, url: Url, response: Sender<ImageResponseMsg>) {
         match self.get_state(url.clone()) {
-            Init => fail!(~"request for image before prefetch"),
+            Init => fail!("request for image before prefetch"),
             Prefetching(DoDecode) => response.send(ImageNotReady),
-            Prefetching(DoNotDecode) | Prefetched(..) => fail!(~"request for image before decode"),
+            Prefetching(DoNotDecode) | Prefetched(..) => fail!("request for image before decode"),
             Decoding => response.send(ImageNotReady),
             Decoded(image) => response.send(ImageReady(image.clone())),
             Failed => response.send(ImageFailed),
         }
     }
 
-    fn wait_for_image(&mut self, url: Url, response: Chan<ImageResponseMsg>) {
+    fn wait_for_image(&mut self, url: Url, response: Sender<ImageResponseMsg>) {
         match self.get_state(url.clone()) {
-            Init => fail!(~"request for image before prefetch"),
+            Init => fail!("request for image before prefetch"),
 
-            Prefetching(DoNotDecode) | Prefetched(..) => fail!(~"request for image before decode"),
+            Prefetching(DoNotDecode) | Prefetched(..) => fail!("request for image before decode"),
 
             Prefetching(DoDecode) | Decoding => {
                 // We don't have this image yet
                 if self.wait_map.contains_key(&url) {
                     let waiters = self.wait_map.find_mut(&url).unwrap();
                     let mut response = Some(response);
-                    unsafe {
-                        waiters.unsafe_access(|waiters| waiters.push(response.take().unwrap()))
-                    }
+                    let mut items = waiters.lock();
+                    items.push(response.take().unwrap());
                 } else {
-                    self.wait_map.insert(url, MutexArc::new(~[response]));
+                    let response = vec!(response);
+                    let wrapped = Arc::new(Mutex::new(response));
+                    self.wait_map.insert(url, wrapped);
                 }
             }
 
@@ -430,13 +420,13 @@ impl ImageCache {
 }
 
 
-trait ImageCacheTaskClient {
+pub trait ImageCacheTaskClient {
     fn exit(&self);
 }
 
 impl ImageCacheTaskClient for ImageCacheTask {
     fn exit(&self) {
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = channel();
         self.send(Exit(response_chan));
         response_port.recv();
     }
@@ -446,42 +436,54 @@ impl ImageCacheTask {
     pub fn send(&self, msg: Msg) {
         self.chan.send(msg);
     }
-    
+
     #[cfg(test)]
-    fn wait_for_store(&self) -> Port<()> {
-        let (port, chan) = Chan::new();
+    fn wait_for_store(&self) -> Receiver<()> {
+        let (chan, port) = channel();
         self.send(WaitForStore(chan));
         port
     }
 
     #[cfg(test)]
-    fn wait_for_store_prefetched(&self) -> Port<()> {
-        let (port, chan) = Chan::new();
+    fn wait_for_store_prefetched(&self) -> Receiver<()> {
+        let (chan, port) = channel();
         self.send(WaitForStorePrefetched(chan));
         port
     }
 }
 
 fn load_image_data(url: Url, resource_task: ResourceTask) -> Result<~[u8], ()> {
-    let (response_port, response_chan) = Chan::new();
-    resource_task.send(resource_task::Load(url, response_chan));
+    let (response_chan, response_port) = channel();
+    resource_task.send(resource_task::Load(LoadData::new(url), response_chan));
 
-    let mut image_data = ~[];
+    let mut image_data = vec!();
 
     let progress_port = response_port.recv().progress_port;
     loop {
         match progress_port.recv() {
             resource_task::Payload(data) => {
-                image_data.push_all(data);
+                image_data.push_all(data.as_slice());
             }
             resource_task::Done(result::Ok(..)) => {
-                return Ok(image_data);
+                return Ok(image_data.move_iter().collect());
             }
             resource_task::Done(result::Err(..)) => {
                 return Err(());
             }
         }
     }
+}
+
+
+pub fn spawn_listener<A: Send>(f: proc(Receiver<A>):Send) -> Sender<A> {
+    let (setup_chan, setup_port) = channel();
+
+    spawn(proc() {
+        let (chan, port) = channel();
+        setup_chan.send(chan);
+        f(port);
+    });
+    setup_port.recv()
 }
 
 
@@ -492,16 +494,82 @@ mod tests {
     use resource_task;
     use resource_task::{ResourceTask, Metadata, start_sending};
     use image::base::test_image_bin;
-    use util::spawn_listener;
     use servo_util::url::parse_url;
+    use std::comm;
 
-    fn mock_resource_task(on_load: proc(resource: SharedChan<resource_task::ProgressMsg>)) -> ResourceTask {
-        spawn_listener("mock_resource_task", proc(port: Port<resource_task::ControlMsg>) {
+    trait Closure {
+        fn invoke(&self, _response: Sender<resource_task::ProgressMsg>) { }
+    }
+    struct DoesNothing;
+    impl Closure for DoesNothing { }
+
+    struct JustSendOK {
+        url_requested_chan: Sender<()>,
+    }
+    impl Closure for JustSendOK {
+        fn invoke(&self, response: Sender<resource_task::ProgressMsg>) {
+            self.url_requested_chan.send(());
+            response.send(resource_task::Done(Ok(())));
+        }
+    }
+
+    struct SendTestImage;
+    impl Closure for SendTestImage {
+        fn invoke(&self, response: Sender<resource_task::ProgressMsg>) {
+            response.send(resource_task::Payload(test_image_bin()));
+            response.send(resource_task::Done(Ok(())));
+        }
+    }
+
+    struct SendBogusImage;
+    impl Closure for SendBogusImage {
+        fn invoke(&self, response: Sender<resource_task::ProgressMsg>) {
+            response.send(resource_task::Payload(vec!()));
+            response.send(resource_task::Done(Ok(())));
+        }
+    }
+
+    struct SendTestImageErr;
+    impl Closure for SendTestImageErr {
+        fn invoke(&self, response: Sender<resource_task::ProgressMsg>) {
+            response.send(resource_task::Payload(test_image_bin()));
+            response.send(resource_task::Done(Err("".to_owned())));
+        }
+    }
+
+    struct WaitSendTestImage {
+        wait_port: Receiver<()>,
+    }
+    impl Closure for WaitSendTestImage {
+        fn invoke(&self, response: Sender<resource_task::ProgressMsg>) {
+            // Don't send the data until after the client requests
+            // the image
+            self.wait_port.recv();
+            response.send(resource_task::Payload(test_image_bin()));
+            response.send(resource_task::Done(Ok(())));
+        }
+    }
+
+    struct WaitSendTestImageErr {
+        wait_port: Receiver<()>,
+    }
+    impl Closure for WaitSendTestImageErr {
+        fn invoke(&self, response: Sender<resource_task::ProgressMsg>) {
+            // Don't send the data until after the client requests
+            // the image
+            self.wait_port.recv();
+            response.send(resource_task::Payload(test_image_bin()));
+            response.send(resource_task::Done(Err("".to_owned())));
+        }
+    }
+
+    fn mock_resource_task<T: Closure+Send>(on_load: Box<T>) -> ResourceTask {
+        spawn_listener(proc(port: Receiver<resource_task::ControlMsg>) {
             loop {
                 match port.recv() {
                     resource_task::Load(_, response) => {
                         let chan = start_sending(response, Metadata::default(parse_url("file:///fake", None)));
-                        on_load(chan);
+                        on_load.invoke(chan);
                     }
                     resource_task::Exit => break
                 }
@@ -511,7 +579,7 @@ mod tests {
 
     #[test]
     fn should_exit_on_request() {
-        let mock_resource_task = mock_resource_task(proc(_response) {});
+        let mock_resource_task = mock_resource_task(box DoesNothing);
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let _url = parse_url("file", None);
@@ -523,24 +591,21 @@ mod tests {
     #[test]
     #[should_fail]
     fn should_fail_if_unprefetched_image_is_requested() {
-        let mock_resource_task = mock_resource_task(proc(_response) {});
+        let mock_resource_task = mock_resource_task(box DoesNothing);
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
 
-        let (port, chan) = Chan::new();
+        let (chan, port) = channel();
         image_cache_task.send(GetImage(url, chan));
         port.recv();
     }
 
     #[test]
     fn should_request_url_from_resource_task_on_prefetch() {
-        let (url_requested, url_requested_chan) = Chan::new();
+        let (url_requested_chan, url_requested) = channel();
 
-        let mock_resource_task = mock_resource_task(proc(response) {
-            url_requested_chan.send(());
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box JustSendOK { url_requested_chan: url_requested_chan});
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -553,12 +618,9 @@ mod tests {
 
     #[test]
     fn should_not_request_url_from_resource_task_on_multiple_prefetches() {
-        let (url_requested, url_requested_chan) = Chan::new();
+        let (url_requested_chan, url_requested) = comm::channel();
 
-        let mock_resource_task = mock_resource_task(proc(response) {
-            url_requested_chan.send(());
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box JustSendOK { url_requested_chan: url_requested_chan});
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -568,27 +630,24 @@ mod tests {
         url_requested.recv();
         image_cache_task.exit();
         mock_resource_task.send(resource_task::Exit);
-        assert!(url_requested.try_recv().is_none())
+        match url_requested.try_recv() {
+            Err(_) => (),
+            Ok(_) => fail!(),
+        };
     }
 
     #[test]
     fn should_return_image_not_ready_if_data_has_not_arrived() {
-        let (wait_port, wait_chan) = Chan::new();
+        let (wait_chan, wait_port) = comm::channel();
 
-        let mock_resource_task = mock_resource_task(proc(response) {
-            // Don't send the data until after the client requests
-            // the image
-            wait_port.recv();
-            response.send(resource_task::Payload(test_image_bin()));
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box WaitSendTestImage{wait_port: wait_port});
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
 
         image_cache_task.send(Prefetch(url.clone()));
         image_cache_task.send(Decode(url.clone()));
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(GetImage(url, response_chan));
         assert!(response_port.recv() == ImageNotReady);
         wait_chan.send(());
@@ -598,10 +657,7 @@ mod tests {
 
     #[test]
     fn should_return_decoded_image_data_if_data_has_arrived() {
-        let mock_resource_task = mock_resource_task(proc(response) {
-            response.send(resource_task::Payload(test_image_bin()));
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box SendTestImage);
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -614,7 +670,7 @@ mod tests {
         // Wait until our mock resource task has sent the image to the image cache
         join_port.recv();
 
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(GetImage(url, response_chan));
         match response_port.recv() {
           ImageReady(_) => (),
@@ -627,10 +683,7 @@ mod tests {
 
     #[test]
     fn should_return_decoded_image_data_for_multiple_requests() {
-        let mock_resource_task = mock_resource_task(proc(response) {
-            response.send(resource_task::Payload(test_image_bin()));
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box SendTestImage);
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -644,7 +697,7 @@ mod tests {
         join_port.recv();
 
         for _ in range(0,2) {
-            let (response_port, response_chan) = Chan::new();
+            let (response_chan, response_port) = comm::channel();
             image_cache_task.send(GetImage(url.clone(), response_chan));
             match response_port.recv() {
               ImageReady(_) => (),
@@ -658,11 +711,11 @@ mod tests {
 
     #[test]
     fn should_not_request_image_from_resource_task_if_image_is_already_available() {
-        let (image_bin_sent, image_bin_sent_chan) = Chan::new();
+        let (image_bin_sent_chan, image_bin_sent) = comm::channel();
 
-        let (resource_task_exited, resource_task_exited_chan) = Chan::new();
+        let (resource_task_exited_chan, resource_task_exited) = comm::channel();
 
-        let mock_resource_task = spawn_listener("should_not...already_available", proc(port: Port<resource_task::ControlMsg>) {
+        let mock_resource_task = spawn_listener(proc(port: Receiver<resource_task::ControlMsg>) {
             loop {
                 match port.recv() {
                     resource_task::Load(_, response) => {
@@ -696,22 +749,25 @@ mod tests {
 
         // Our resource task should not have received another request for the image
         // because it's already cached
-        assert!(image_bin_sent.try_recv().is_none());
+        match image_bin_sent.try_recv() {
+            Err(_) => (),
+            Ok(_) => fail!(),
+        }
     }
 
     #[test]
     fn should_not_request_image_from_resource_task_if_image_fetch_already_failed() {
-        let (image_bin_sent, image_bin_sent_chan) = Chan::new();
+        let (image_bin_sent_chan, image_bin_sent) = comm::channel();
 
-        let (resource_task_exited, resource_task_exited_chan) = Chan::new();
+        let (resource_task_exited_chan, resource_task_exited) = comm::channel();
 
-        let mock_resource_task = spawn_listener("should_not...already_failed", proc(port: Port<resource_task::ControlMsg>) {
+        let mock_resource_task = spawn_listener(proc(port: Receiver<resource_task::ControlMsg>) {
             loop {
                 match port.recv() {
                     resource_task::Load(_, response) => {
                         let chan = start_sending(response, Metadata::default(parse_url("file:///fake", None)));
                         chan.send(resource_task::Payload(test_image_bin()));
-                        chan.send(resource_task::Done(Err(())));
+                        chan.send(resource_task::Done(Err("".to_owned())));
                         image_bin_sent_chan.send(());
                     }
                     resource_task::Exit => {
@@ -741,16 +797,15 @@ mod tests {
 
         // Our resource task should not have received another request for the image
         // because it's already cached
-        assert!(image_bin_sent.try_recv().is_none());
+        match image_bin_sent.try_recv() {
+            Err(_) => (),
+            Ok(_) => fail!(),
+        }
     }
 
     #[test]
     fn should_return_failed_if_image_bin_cannot_be_fetched() {
-        let mock_resource_task = mock_resource_task(proc(response) {
-            response.send(resource_task::Payload(test_image_bin()));
-            // ERROR fetching image
-            response.send(resource_task::Done(Err(())));
-        });
+        let mock_resource_task = mock_resource_task(box SendTestImageErr);
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -763,7 +818,7 @@ mod tests {
         // Wait until our mock resource task has sent the image to the image cache
         join_port.recv();
 
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(GetImage(url, response_chan));
         match response_port.recv() {
           ImageFailed => (),
@@ -776,11 +831,7 @@ mod tests {
 
     #[test]
     fn should_return_failed_for_multiple_get_image_requests_if_image_bin_cannot_be_fetched() {
-        let mock_resource_task = mock_resource_task(proc(response) {
-            response.send(resource_task::Payload(test_image_bin()));
-            // ERROR fetching image
-            response.send(resource_task::Done(Err(())));
-        });
+        let mock_resource_task = mock_resource_task(box SendTestImageErr);
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -793,7 +844,7 @@ mod tests {
         // Wait until our mock resource task has sent the image to the image cache
         join_port.recv();
 
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(GetImage(url.clone(), response_chan));
         match response_port.recv() {
           ImageFailed => (),
@@ -801,7 +852,7 @@ mod tests {
         }
 
         // And ask again, we should get the same response
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(GetImage(url, response_chan));
         match response_port.recv() {
           ImageFailed => (),
@@ -814,11 +865,7 @@ mod tests {
 
     #[test]
     fn should_return_failed_if_image_decode_fails() {
-        let mock_resource_task = mock_resource_task(proc(response) {
-            // Bogus data
-            response.send(resource_task::Payload(~[]));
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box SendBogusImage);
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -832,7 +879,7 @@ mod tests {
         join_port.recv();
 
         // Make the request
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(GetImage(url, response_chan));
 
         match response_port.recv() {
@@ -846,10 +893,7 @@ mod tests {
 
     #[test]
     fn should_return_image_on_wait_if_image_is_already_loaded() {
-        let mock_resource_task = mock_resource_task(proc(response) {
-            response.send(resource_task::Payload(test_image_bin()));
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box SendTestImage);
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -862,7 +906,7 @@ mod tests {
         // Wait until our mock resource task has sent the image to the image cache
         join_port.recv();
 
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(WaitForImage(url, response_chan));
         match response_port.recv() {
           ImageReady(..) => (),
@@ -875,13 +919,9 @@ mod tests {
 
     #[test]
     fn should_return_image_on_wait_if_image_is_not_yet_loaded() {
-        let (wait_port, wait_chan) = Chan::new();
+        let (wait_chan, wait_port) = comm::channel();
 
-        let mock_resource_task = mock_resource_task(proc(response) {
-            wait_port.recv();
-            response.send(resource_task::Payload(test_image_bin()));
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box WaitSendTestImage {wait_port: wait_port});
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -889,7 +929,7 @@ mod tests {
         image_cache_task.send(Prefetch(url.clone()));
         image_cache_task.send(Decode(url.clone()));
 
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(WaitForImage(url, response_chan));
 
         wait_chan.send(());
@@ -905,13 +945,9 @@ mod tests {
 
     #[test]
     fn should_return_image_failed_on_wait_if_image_fails_to_load() {
-        let (wait_port, wait_chan) = Chan::new();
+        let (wait_chan, wait_port) = comm::channel();
 
-        let mock_resource_task = mock_resource_task(proc(response) {
-            wait_port.recv();
-            response.send(resource_task::Payload(test_image_bin()));
-            response.send(resource_task::Done(Err(())));
-        });
+        let mock_resource_task = mock_resource_task(box WaitSendTestImageErr{wait_port: wait_port});
 
         let image_cache_task = ImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -919,7 +955,7 @@ mod tests {
         image_cache_task.send(Prefetch(url.clone()));
         image_cache_task.send(Decode(url.clone()));
 
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(WaitForImage(url, response_chan));
 
         wait_chan.send(());
@@ -935,10 +971,7 @@ mod tests {
 
     #[test]
     fn sync_cache_should_wait_for_images() {
-        let mock_resource_task = mock_resource_task(proc(response) {
-            response.send(resource_task::Payload(test_image_bin()));
-            response.send(resource_task::Done(Ok(())));
-        });
+        let mock_resource_task = mock_resource_task(box SendTestImage);
 
         let image_cache_task = SyncImageCacheTask(mock_resource_task.clone());
         let url = parse_url("file", None);
@@ -946,7 +979,7 @@ mod tests {
         image_cache_task.send(Prefetch(url.clone()));
         image_cache_task.send(Decode(url.clone()));
 
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = comm::channel();
         image_cache_task.send(GetImage(url, response_chan));
         match response_port.recv() {
           ImageReady(_) => (),

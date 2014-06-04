@@ -12,6 +12,7 @@ pull requests. Each pull request will be reviewed by a core contributor
 given feedback for changes that would be required. All contributions should
 follow this format, even those from core contributors.
 
+If you're looking for easy bugs, have a look at the [E-Easy issue tag](https://github.com/mozilla/servo/issues?labels=E-easy&page=1&state=open) on GitHub.
 
 ## Pull Request Checklist
 
@@ -26,8 +27,9 @@ follow this format, even those from core contributors.
   it, you can @-reply a reviewer asking for a review in the pull request or a
   comment, or you can ask for a review in `#servo` on `irc.mozilla.org`.
 
-- When changing code related to the DOM, add a test to `src/test/html/content`,
-  either by adding it to an existing test file or creating a new one.
+- Add tests relevant to the fixed bug or new feature.  For a DOM change this
+  will usually be a content test; for layout, a reftest.  See our [testing
+  guide](https://github.com/mozilla/servo/wiki/Testing) for more information.
 
 For specific git instructions, see [GitHub & Critic PR handling 101](https://github.com/mozilla/servo/wiki/Github-&-Critic-PR-handling-101).
 

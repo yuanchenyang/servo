@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLTemplateElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLTemplateElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLTemplateElementDerived;
-use dom::bindings::js::JS;
+use dom::bindings::js::{JSRef, Temporary};
 use dom::document::Document;
 use dom::element::HTMLTemplateElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -14,27 +14,27 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLTemplateElement {
-    htmlelement: HTMLElement,
+    pub htmlelement: HTMLElement,
 }
 
 impl HTMLTemplateElementDerived for EventTarget {
     fn is_htmltemplateelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLTemplateElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLTemplateElementTypeId))
     }
 }
 
 impl HTMLTemplateElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLTemplateElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLTemplateElement {
         HTMLTemplateElement {
             htmlelement: HTMLElement::new_inherited(HTMLTemplateElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLTemplateElement> {
-        let element = HTMLTemplateElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLTemplateElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLTemplateElement> {
+        let element = HTMLTemplateElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLTemplateElementBinding::Wrap)
     }
+}
+
+pub trait HTMLTemplateElementMethods {
 }

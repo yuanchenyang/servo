@@ -2,42 +2,43 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::DOMExceptionBinding;
-use dom::bindings::js::JS;
+use dom::bindings::codegen::BindingDeclarations::DOMExceptionBinding;
+use dom::bindings::codegen::BindingDeclarations::DOMExceptionBinding::DOMExceptionConstants;
+use dom::bindings::js::{JSRef, Temporary};
 use dom::bindings::utils::{Reflectable, Reflector, reflect_dom_object};
 use dom::window::Window;
 use servo_util::str::DOMString;
 
 #[repr(uint)]
-#[deriving(ToStr, Encodable)]
-enum DOMErrorName {
-    IndexSizeError = 1,
-    HierarchyRequestError = 3,
-    WrongDocumentError = 4,
-    InvalidCharacterError = 5,
-    NoModificationAllowedError = 7,
-    NotFoundError = 8,
-    NotSupportedError = 9,
-    InvalidStateError = 11,
-    SyntaxError = 12,
-    InvalidModificationError = 13,
-    NamespaceError = 14,
-    InvalidAccessError = 15,
-    SecurityError = 18,
-    NetworkError = 19,
-    AbortError = 20,
-    URLMismatchError = 21,
-    QuotaExceededError = 22,
-    TimeoutError = 23,
-    InvalidNodeTypeError = 24,
-    DataCloneError = 25,
+#[deriving(Show, Encodable)]
+pub enum DOMErrorName {
+    IndexSizeError = DOMExceptionConstants::INDEX_SIZE_ERR,
+    HierarchyRequestError = DOMExceptionConstants::HIERARCHY_REQUEST_ERR,
+    WrongDocumentError = DOMExceptionConstants::WRONG_DOCUMENT_ERR,
+    InvalidCharacterError = DOMExceptionConstants::INVALID_CHARACTER_ERR,
+    NoModificationAllowedError = DOMExceptionConstants::NO_MODIFICATION_ALLOWED_ERR,
+    NotFoundError = DOMExceptionConstants::NOT_FOUND_ERR,
+    NotSupportedError = DOMExceptionConstants::NOT_SUPPORTED_ERR,
+    InvalidStateError = DOMExceptionConstants::INVALID_STATE_ERR,
+    SyntaxError = DOMExceptionConstants::SYNTAX_ERR,
+    InvalidModificationError = DOMExceptionConstants::INVALID_MODIFICATION_ERR,
+    NamespaceError = DOMExceptionConstants::NAMESPACE_ERR,
+    InvalidAccessError = DOMExceptionConstants::INVALID_ACCESS_ERR,
+    SecurityError = DOMExceptionConstants::SECURITY_ERR,
+    NetworkError = DOMExceptionConstants::NETWORK_ERR,
+    AbortError = DOMExceptionConstants::ABORT_ERR,
+    URLMismatchError = DOMExceptionConstants::URL_MISMATCH_ERR,
+    QuotaExceededError = DOMExceptionConstants::QUOTA_EXCEEDED_ERR,
+    TimeoutError = DOMExceptionConstants::TIMEOUT_ERR,
+    InvalidNodeTypeError = DOMExceptionConstants::INVALID_NODE_TYPE_ERR,
+    DataCloneError = DOMExceptionConstants::DATA_CLONE_ERR,
     EncodingError
 }
 
 #[deriving(Encodable)]
 pub struct DOMException {
-    code: DOMErrorName,
-    reflector_: Reflector
+    pub code: DOMErrorName,
+    pub reflector_: Reflector
 }
 
 impl DOMException {
@@ -48,8 +49,8 @@ impl DOMException {
         }
     }
 
-    pub fn new(window: &Window, code: DOMErrorName) -> JS<DOMException> {
-        reflect_dom_object(~DOMException::new_inherited(code), window, DOMExceptionBinding::Wrap)
+    pub fn new(window: &JSRef<Window>, code: DOMErrorName) -> Temporary<DOMException> {
+        reflect_dom_object(box DOMException::new_inherited(code), window, DOMExceptionBinding::Wrap)
     }
 }
 
@@ -63,9 +64,15 @@ impl Reflectable for DOMException {
     }
 }
 
-impl DOMException {
+pub trait DOMExceptionMethods {
+    fn Code(&self) -> u16;
+    fn Name(&self) -> DOMString;
+    fn Message(&self) -> DOMString;
+}
+
+impl<'a> DOMExceptionMethods for JSRef<'a, DOMException> {
     // http://dom.spec.whatwg.org/#dom-domexception-code
-    pub fn Code(&self) -> u16 {
+    fn Code(&self) -> u16 {
         match self.code {
             // http://dom.spec.whatwg.org/#concept-throw
             EncodingError => 0,
@@ -74,34 +81,34 @@ impl DOMException {
     }
 
     // http://dom.spec.whatwg.org/#error-names-0
-    pub fn Name(&self) -> DOMString {
+    fn Name(&self) -> DOMString {
         self.code.to_str()
     }
 
     // http://dom.spec.whatwg.org/#error-names-0
-    pub fn Message(&self) -> DOMString {
+    fn Message(&self) -> DOMString {
         match self.code {
-            IndexSizeError => ~"The index is not in the allowed range.",
-            HierarchyRequestError => ~"The operation would yield an incorrect node tree.",
-            WrongDocumentError => ~"The object is in the wrong document.",
-            InvalidCharacterError => ~"The string contains invalid characters.",
-            NoModificationAllowedError => ~"The object can not be modified.",
-            NotFoundError => ~"The object can not be found here.",
-            NotSupportedError => ~"The operation is not supported.",
-            InvalidStateError => ~"The object is in an invalid state.",
-            SyntaxError => ~"The string did not match the expected pattern.",
-            InvalidModificationError => ~"The object can not be modified in this way.",
-            NamespaceError => ~"The operation is not allowed by Namespaces in XML.",
-            InvalidAccessError => ~"The object does not support the operation or argument.",
-            SecurityError => ~"The operation is insecure.",
-            NetworkError => ~"A network error occurred.",
-            AbortError => ~"The operation was aborted.",
-            URLMismatchError => ~"The given URL does not match another URL.",
-            QuotaExceededError => ~"The quota has been exceeded.",
-            TimeoutError => ~"The operation timed out.",
-            InvalidNodeTypeError => ~"The supplied node is incorrect or has an incorrect ancestor for this operation.",
-            DataCloneError => ~"The object can not be cloned.",
-            EncodingError => ~"The encoding operation (either encoded or decoding) failed."
+            IndexSizeError => "The index is not in the allowed range.".to_owned(),
+            HierarchyRequestError => "The operation would yield an incorrect node tree.".to_owned(),
+            WrongDocumentError => "The object is in the wrong document.".to_owned(),
+            InvalidCharacterError => "The string contains invalid characters.".to_owned(),
+            NoModificationAllowedError => "The object can not be modified.".to_owned(),
+            NotFoundError => "The object can not be found here.".to_owned(),
+            NotSupportedError => "The operation is not supported.".to_owned(),
+            InvalidStateError => "The object is in an invalid state.".to_owned(),
+            SyntaxError => "The string did not match the expected pattern.".to_owned(),
+            InvalidModificationError => "The object can not be modified in this way.".to_owned(),
+            NamespaceError => "The operation is not allowed by Namespaces in XML.".to_owned(),
+            InvalidAccessError => "The object does not support the operation or argument.".to_owned(),
+            SecurityError => "The operation is insecure.".to_owned(),
+            NetworkError => "A network error occurred.".to_owned(),
+            AbortError => "The operation was aborted.".to_owned(),
+            URLMismatchError => "The given URL does not match another URL.".to_owned(),
+            QuotaExceededError => "The quota has been exceeded.".to_owned(),
+            TimeoutError => "The operation timed out.".to_owned(),
+            InvalidNodeTypeError => "The supplied node is incorrect or has an incorrect ancestor for this operation.".to_owned(),
+            DataCloneError => "The object can not be cloned.".to_owned(),
+            EncodingError => "The encoding operation (either encoded or decoding) failed.".to_owned()
         }
     }
 }

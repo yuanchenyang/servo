@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLUListElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLUListElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLUListElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLUListElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -15,45 +15,49 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLUListElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLUListElementDerived for EventTarget {
     fn is_htmlulistelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLUListElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLUListElementTypeId))
     }
 }
 
 impl HTMLUListElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLUListElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLUListElement {
         HTMLUListElement {
             htmlelement: HTMLElement::new_inherited(HTMLUListElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLUListElement> {
-        let element = HTMLUListElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLUListElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLUListElement> {
+        let element = HTMLUListElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLUListElementBinding::Wrap)
     }
 }
 
-impl HTMLUListElement {
-    pub fn Compact(&self) -> bool {
+pub trait HTMLUListElementMethods {
+    fn Compact(&self) -> bool;
+    fn SetCompact(&mut self, _compact: bool) -> ErrorResult;
+    fn Type(&self) -> DOMString;
+    fn SetType(&mut self, _type: DOMString) -> ErrorResult;
+}
+
+impl<'a> HTMLUListElementMethods for JSRef<'a, HTMLUListElement> {
+    fn Compact(&self) -> bool {
         false
     }
-    
-    pub fn SetCompact(&mut self, _compact: bool) -> ErrorResult {
+
+    fn SetCompact(&mut self, _compact: bool) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Type(&self) -> DOMString {
-        ~""
+    fn Type(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetType(&mut self, _type: DOMString) -> ErrorResult {
+    fn SetType(&mut self, _type: DOMString) -> ErrorResult {
         Ok(())
     }
 }

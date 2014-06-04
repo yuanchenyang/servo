@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLEmbedElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLEmbedElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLEmbedElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLEmbedElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -15,81 +15,94 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLEmbedElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLEmbedElementDerived for EventTarget {
     fn is_htmlembedelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLEmbedElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLEmbedElementTypeId))
     }
 }
 
 impl HTMLEmbedElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLEmbedElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLEmbedElement {
         HTMLEmbedElement {
             htmlelement: HTMLElement::new_inherited(HTMLEmbedElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLEmbedElement> {
-        let element = HTMLEmbedElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLEmbedElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLEmbedElement> {
+        let element = HTMLEmbedElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLEmbedElementBinding::Wrap)
     }
 }
 
-impl HTMLEmbedElement {
-    pub fn Src(&self) -> DOMString {
-        ~""
+pub trait HTMLEmbedElementMethods {
+    fn Src(&self) -> DOMString;
+    fn SetSrc(&mut self, _src: DOMString) -> ErrorResult;
+    fn Type(&self) -> DOMString;
+    fn SetType(&mut self, _type: DOMString) -> ErrorResult;
+    fn Width(&self) -> DOMString;
+    fn SetWidth(&mut self, _width: DOMString) -> ErrorResult;
+    fn Height(&self) -> DOMString;
+    fn SetHeight(&mut self, _height: DOMString) -> ErrorResult;
+    fn Align(&self) -> DOMString;
+    fn SetAlign(&mut self, _type: DOMString) -> ErrorResult;
+    fn Name(&self) -> DOMString;
+    fn SetName(&mut self, _type: DOMString) -> ErrorResult;
+    fn GetSVGDocument(&self) -> Option<Temporary<Document>>;
+}
+
+impl<'a> HTMLEmbedElementMethods for JSRef<'a, HTMLEmbedElement> {
+    fn Src(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetSrc(&mut self, _src: DOMString) -> ErrorResult {
+    fn SetSrc(&mut self, _src: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Type(&self) -> DOMString {
-        ~""
+    fn Type(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetType(&mut self, _type: DOMString) -> ErrorResult {
+    fn SetType(&mut self, _type: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Width(&self) -> DOMString {
-        ~""
+    fn Width(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetWidth(&mut self, _width: DOMString) -> ErrorResult {
+    fn SetWidth(&mut self, _width: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Height(&self) -> DOMString {
-        ~""
+    fn Height(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetHeight(&mut self, _height: DOMString) -> ErrorResult {
+    fn SetHeight(&mut self, _height: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Align(&self) -> DOMString {
-        ~""
+    fn Align(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetAlign(&mut self, _type: DOMString) -> ErrorResult {
+    fn SetAlign(&mut self, _type: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Name(&self) -> DOMString {
-        ~""
+    fn Name(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetName(&mut self, _type: DOMString) -> ErrorResult {
+    fn SetName(&mut self, _type: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn GetSVGDocument(&self) -> Option<JS<Document>> {
+    fn GetSVGDocument(&self) -> Option<Temporary<Document>> {
         None
     }
 }

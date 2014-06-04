@@ -6,39 +6,42 @@
 //! indirection.
 
 use std::cast;
+use std::mem;
 use std::ptr;
-use std::util;
 
 use layout::flow::{Flow, base, mut_base};
 
-pub type Link = Option<~Flow>;
+pub type Link = Option<Box<Flow:Share>>;
 
 #[deriving(Clone)]
 pub struct Rawlink {
-    priv vtable: *(),
-    priv obj: *mut (),
+    vtable: *(),
+    obj: *mut (),
 }
 
+/// Doubly-linked list of Flows.
+///
+/// The forward links are strong references.
+/// The backward links are weak references.
 pub struct FlowList {
-    priv length: uint,
-    priv list_head: Link,
-    priv list_tail: Rawlink,
+    length: uint,
+    list_head: Link,
+    list_tail: Rawlink,
 }
 
 /// Double-ended FlowList iterator
-#[deriving(Clone)]
 pub struct FlowListIterator<'a> {
-    priv head: &'a Link,
-    priv tail: Rawlink,
-    priv nelem: uint,
+    head: &'a Link,
+    tail: Rawlink,
+    nelem: uint,
 }
 
 /// Double-ended mutable FlowList iterator
 pub struct MutFlowListIterator<'a> {
-    priv list: &'a mut FlowList,
-    priv head: Rawlink,
-    priv tail: Rawlink,
-    priv nelem: uint,
+    list: &'a mut FlowList,
+    head: Rawlink,
+    tail: Rawlink,
+    nelem: uint,
 }
 
 impl Rawlink {
@@ -51,7 +54,7 @@ impl Rawlink {
     }
 
     /// Like Option::Some for Rawlink
-    fn some(n: &mut Flow) -> Rawlink {
+    pub fn some(n: &mut Flow) -> Rawlink {
         unsafe { cast::transmute(n) }
     }
 
@@ -65,7 +68,7 @@ impl Rawlink {
         }
     }
 
-    fn resolve(&mut self) -> Option<&mut Flow> {
+    pub fn resolve(&mut self) -> Option<&mut Flow> {
         if self.obj.is_null() {
             None
         } else {
@@ -85,7 +88,7 @@ impl Rawlink {
 }
 
 /// Set the .prev field on `next`, then return `Some(next)`
-fn link_with_prev(mut next: ~Flow, prev: Rawlink) -> Link {
+fn link_with_prev(mut next: Box<Flow:Share>, prev: Rawlink) -> Link {
     mut_base(next).prev_sibling = prev;
     Some(next)
 }
@@ -143,7 +146,7 @@ impl FlowList {
     /// Add an element first in the list
     ///
     /// O(1)
-    pub fn push_front(&mut self, mut new_head: ~Flow) {
+    pub fn push_front(&mut self, mut new_head: Box<Flow:Share>) {
         match self.list_head {
             None => {
                 self.list_tail = Rawlink::some(new_head);
@@ -152,7 +155,7 @@ impl FlowList {
             Some(ref mut head) => {
                 mut_base(new_head).prev_sibling = Rawlink::none();
                 mut_base(*head).prev_sibling = Rawlink::some(new_head);
-                util::swap(head, &mut new_head);
+                mem::swap(head, &mut new_head);
                 mut_base(*head).next_sibling = Some(new_head);
             }
         }
@@ -162,7 +165,7 @@ impl FlowList {
     /// Remove the first element and return it, or None if the list is empty
     ///
     /// O(1)
-    pub fn pop_front(&mut self) -> Option<~Flow> {
+    pub fn pop_front(&mut self) -> Option<Box<Flow:Share>> {
         self.list_head.take().map(|mut front_node| {
             self.length -= 1;
             match mut_base(front_node).next_sibling.take() {
@@ -176,7 +179,7 @@ impl FlowList {
     /// Add an element last in the list
     ///
     /// O(1)
-    pub fn push_back(&mut self, mut new_tail: ~Flow) {
+    pub fn push_back(&mut self, mut new_tail: Box<Flow:Share>) {
         if self.list_tail.is_none() {
             return self.push_front(new_tail);
         } else {
@@ -191,7 +194,7 @@ impl FlowList {
     /// Remove the last element and return it, or None if the list is empty
     ///
     /// O(1)
-    pub fn pop_back(&mut self) -> Option<~Flow> {
+    pub fn pop_back(&mut self) -> Option<Box<Flow:Share>> {
         if self.list_tail.is_none() {
             None
         } else {

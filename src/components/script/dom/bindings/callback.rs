@@ -2,94 +2,104 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::utils::Reflectable;
-use js::jsapi::{JSContext, JSObject, JS_WrapObject, JSVal, JS_ObjectIsCallable};
-use js::jsapi::{JS_GetProperty, JSTracer, JS_CallTracer};
-use js::{JSVAL_IS_OBJECT, JSVAL_TO_OBJECT, JSTRACE_OBJECT};
+use dom::bindings::js::JSRef;
+use dom::bindings::trace::Traceable;
+use dom::bindings::utils::{Reflectable, global_object_for_js_object};
+use js::jsapi::{JSContext, JSObject, JS_WrapObject, JS_ObjectIsCallable};
+use js::jsapi::JS_GetProperty;
+use js::jsval::{JSVal, UndefinedValue};
 
-use std::cast;
-use std::libc;
 use std::ptr;
 
-use extra::serialize::{Encodable, Encoder};
+use serialize::{Encodable, Encoder};
 
 pub enum ExceptionHandling {
     // Report any exception and don't throw it to the caller code.
-    eReportExceptions,
+    ReportExceptions,
     // Throw an exception to the caller code if the thrown exception is a
     // binding object for a DOMError from the caller's scope, otherwise report
     // it.
-    eRethrowContentExceptions,
+    RethrowContentExceptions,
     // Throw any exception to the caller code.
-    eRethrowExceptions
+    RethrowExceptions
 }
 
-#[deriving(Clone,Eq)]
-pub struct CallbackInterface {
-    callback: *JSObject
+#[deriving(Clone,Eq,Encodable)]
+pub struct CallbackFunction {
+    object: CallbackObject
 }
 
-impl<S: Encoder> Encodable<S> for CallbackInterface {
-    fn encode(&self, s: &mut S) {
-        unsafe {
-            let tracer: *mut JSTracer = cast::transmute(s);
-            "callback".to_c_str().with_ref(|name| {
-                (*tracer).debugPrinter = ptr::null();
-                (*tracer).debugPrintIndex = -1;
-                (*tracer).debugPrintArg = name as *libc::c_void;
-                JS_CallTracer(tracer as *JSTracer, self.callback, JSTRACE_OBJECT as u32);
-            });
+impl CallbackFunction {
+    pub fn new(callback: *mut JSObject) -> CallbackFunction {
+        CallbackFunction {
+            object: CallbackObject {
+                callback: Traceable::new(callback)
+            }
         }
     }
 }
 
-pub trait CallbackContainer {
-    fn callback(&self) -> *JSObject;
+#[deriving(Clone,Eq,Encodable)]
+pub struct CallbackInterface {
+    object: CallbackObject
 }
 
-impl CallbackContainer for CallbackInterface {
-    fn callback(&self) -> *JSObject {
-        self.callback
+#[deriving(Clone,Eq,Encodable)]
+struct CallbackObject {
+    callback: Traceable<*mut JSObject>,
+}
+
+pub trait CallbackContainer {
+    fn new(callback: *mut JSObject) -> Self;
+    fn callback(&self) -> *mut JSObject;
+}
+
+impl CallbackInterface {
+    pub fn callback(&self) -> *mut JSObject {
+        *self.object.callback
+    }
+}
+
+impl CallbackFunction {
+    pub fn callback(&self) -> *mut JSObject {
+        *self.object.callback
     }
 }
 
 impl CallbackInterface {
-    pub fn new(callback: *JSObject) -> CallbackInterface {
+    pub fn new(callback: *mut JSObject) -> CallbackInterface {
         CallbackInterface {
-            callback: callback
+            object: CallbackObject {
+                callback: Traceable::new(callback)
+            }
         }
     }
 
-    pub fn GetCallableProperty(&self, cx: *JSContext, name: *libc::c_char, callable: &mut JSVal) -> bool {
+    pub fn GetCallableProperty(&self, cx: *mut JSContext, name: &str) -> Result<JSVal, ()> {
+        let mut callable = UndefinedValue();
         unsafe {
-            if JS_GetProperty(cx, self.callback, name, &*callable) == 0 {
-                return false;
+            if name.to_c_str().with_ref(|name| JS_GetProperty(cx, self.callback(), name, &mut callable)) == 0 {
+                return Err(());
             }
 
-            if !JSVAL_IS_OBJECT(*callable) ||
-               JS_ObjectIsCallable(cx, JSVAL_TO_OBJECT(*callable)) == 0 {
+            if !callable.is_object() ||
+               JS_ObjectIsCallable(cx, callable.to_object()) == 0 {
                 //ThrowErrorMessage(cx, MSG_NOT_CALLABLE, description.get());
-                return false;
+                return Err(());
             }
-
-            return true;
         }
+        Ok(callable)
     }
 }
 
-pub fn GetJSObjectFromCallback<T: CallbackContainer>(callback: &T) -> *JSObject {
-    callback.callback()
-}
-
-pub fn WrapCallThisObject<T: 'static + CallbackContainer + Reflectable>(cx: *JSContext,
-                                                                        _scope: *JSObject,
-                                                                        p: ~T) -> *JSObject {
-    let obj = GetJSObjectFromCallback(p);
+pub fn WrapCallThisObject<T: Reflectable>(cx: *mut JSContext,
+                                          p: &JSRef<T>) -> *mut JSObject {
+    let mut obj = p.reflector().get_jsobject();
     assert!(obj.is_not_null());
 
     unsafe {
-        if JS_WrapObject(cx, &obj) == 0 {
-            return ptr::null();
+        if JS_WrapObject(cx, &mut obj) == 0 {
+            return ptr::mut_null();
         }
     }
 
@@ -97,19 +107,21 @@ pub fn WrapCallThisObject<T: 'static + CallbackContainer + Reflectable>(cx: *JSC
 }
 
 pub struct CallSetup {
-    cx: *JSContext,
-    handling: ExceptionHandling
+    pub cx: *mut JSContext,
+    pub handling: ExceptionHandling
 }
 
 impl CallSetup {
-    pub fn new(cx: *JSContext, handling: ExceptionHandling) -> CallSetup {
+    pub fn new<T: CallbackContainer>(callback: &T, handling: ExceptionHandling) -> CallSetup {
+        let win = global_object_for_js_object(callback.callback()).root();
+        let cx = win.deref().get_cx();
         CallSetup {
             cx: cx,
             handling: handling
         }
     }
 
-    pub fn GetContext(&self) -> *JSContext {
+    pub fn GetContext(&self) -> *mut JSContext {
         self.cx
     }
 }

@@ -2,12 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use collections::hashmap::HashMap;
 use geom::size::Size2D;
 use layers::platform::surface::NativePaintingGraphicsContext;
 use servo_msg::compositor_msg::Tile;
-use std::hashmap::HashMap;
-use std::to_bytes::Cb;
-use std::util;
+use std::hash::Hash;
+use std::hash::sip::SipState;
+use std::mem;
 
 /// This is a struct used to store buffers when they are not in use.
 /// The render task can quickly query for a particular size of buffer when it
@@ -25,18 +26,21 @@ pub struct BufferMap<T> {
 }
 
 /// A key with which to store buffers. It is based on the size of the buffer.
+#[deriving(TotalEq)]
 struct BufferKey([uint, ..2]);
 
-impl IterBytes for BufferKey {
-    fn iter_bytes(&self, lsb0: bool, f: Cb) -> bool {
-        let i = if lsb0 {0} else {1};
-        self[i].iter_bytes(lsb0, |x| f(x)) && self[1 - i].iter_bytes(lsb0, |x| f(x))
+impl Hash for BufferKey {
+    fn hash(&self, state: &mut SipState) {
+        let BufferKey(ref bytes) = *self;
+        bytes.as_slice().hash(state);
     }
 }
 
 impl Eq for BufferKey {
     fn eq(&self, other: &BufferKey) -> bool {
-        self[0] == other[0] && self[1] == other[1]
+        let BufferKey(s) = *self;
+        let BufferKey(o) = *other;
+        s[0] == o[0] && s[1] == o[1]
     }
 }
 
@@ -50,7 +54,7 @@ impl BufferKey {
 /// A helper struct to keep track of buffers in the HashMap
 struct BufferValue<T> {
     /// An array of buffers, all the same size
-    buffers: ~[T],
+    buffers: Vec<T>,
     /// The counter when this size was last requested
     last_action: uint,
 }
@@ -65,7 +69,7 @@ impl<T: Tile> BufferMap<T> {
             counter: 0u,
         }
     }
-    
+
     /// Insert a new buffer into the map.
     pub fn insert(&mut self, graphics_context: &NativePaintingGraphicsContext, new_buffer: T) {
         let new_key = BufferKey::get(new_buffer.get_size_2d());
@@ -74,14 +78,16 @@ impl<T: Tile> BufferMap<T> {
         // memory limit, no need to store this new buffer; just let it drop.
         if self.mem + new_buffer.get_mem() > self.max_mem && self.map.len() == 1 &&
             self.map.contains_key(&new_key) {
+            new_buffer.destroy(graphics_context);
             return;
         }
 
         self.mem += new_buffer.get_mem();
         // use lazy insertion function to prevent unnecessary allocation
+        let counter = &self.counter;
         self.map.find_or_insert_with(new_key, |_| BufferValue {
-            buffers: ~[],
-            last_action: self.counter
+            buffers: vec!(),
+            last_action: *counter
         }).buffers.push(new_buffer);
 
         let mut opt_key: Option<BufferKey> = None;
@@ -97,7 +103,7 @@ impl<T: Tile> BufferMap<T> {
             };
             if {
                 let list = &mut self.map.get_mut(&old_key).buffers;
-                let condemned_buffer = list.pop();
+                let condemned_buffer = list.pop().take_unwrap();
                 self.mem -= condemned_buffer.get_mem();
                 condemned_buffer.destroy(graphics_context);
                 list.is_empty()
@@ -119,8 +125,8 @@ impl<T: Tile> BufferMap<T> {
             Some(ref mut buffer_val) => {
                 buffer_val.last_action = self.counter;
                 self.counter += 1;
-                
-                let buffer = buffer_val.buffers.pop();
+
+                let buffer = buffer_val.buffers.pop().take_unwrap();
                 self.mem -= buffer.get_mem();
                 if buffer_val.buffers.is_empty() {
                     flag = true;
@@ -129,7 +135,7 @@ impl<T: Tile> BufferMap<T> {
             }
             None => None,
         };
-        
+
         if flag {
             self.map.pop(&key); // Don't store empty vectors!
         }
@@ -139,7 +145,7 @@ impl<T: Tile> BufferMap<T> {
 
     /// Destroys all buffers.
     pub fn clear(&mut self, graphics_context: &NativePaintingGraphicsContext) {
-        let map = util::replace(&mut self.map, HashMap::new());
+        let map = mem::replace(&mut self.map, HashMap::new());
         for (_, value) in map.move_iter() {
             for tile in value.buffers.move_iter() {
                 tile.destroy(graphics_context)

@@ -8,75 +8,75 @@
 //! higher-level API on top of this could allow safe fork-join parallelism.
 
 use native;
+use rand;
+use rand::{Rng, XorShiftRng};
 use std::cast;
-use std::rand::{Rng, XorShiftRng};
-use std::rand;
+use std::mem;
 use std::sync::atomics::{AtomicUint, SeqCst};
 use std::sync::deque::{Abort, BufferPool, Data, Empty, Stealer, Worker};
-use std::unstable::intrinsics;
+use std::task::TaskOpts;
 
 /// A unit of work.
 ///
-/// The type parameter `QUD` stands for "queue user data" and represents global custom data for the
-/// entire work queue, and the type parameter `WUD` stands for "work user data" and represents
-/// custom data specific to each unit of work.
-pub struct WorkUnit<QUD,WUD> {
+/// # Type parameters
+///
+/// - `QueueData`: global custom data for the entire work queue.
+/// - `WorkData`: custom data specific to each unit of work.
+pub struct WorkUnit<QueueData, WorkData> {
     /// The function to execute.
-    fun: extern "Rust" fn(WUD, &mut WorkerProxy<QUD,WUD>),
+    pub fun: extern "Rust" fn(WorkData, &mut WorkerProxy<QueueData, WorkData>),
     /// Arbitrary data.
-    data: WUD,
+    pub data: WorkData,
 }
 
 /// Messages from the supervisor to the worker.
-enum WorkerMsg<QUD,WUD> {
+enum WorkerMsg<QueueData, WorkData> {
     /// Tells the worker to start work.
-    StartMsg(Worker<WorkUnit<QUD,WUD>>, *mut AtomicUint, *QUD),
-
+    StartMsg(Worker<WorkUnit<QueueData, WorkData>>, *mut AtomicUint, *QueueData),
     /// Tells the worker to stop. It can be restarted again with a `StartMsg`.
     StopMsg,
-
     /// Tells the worker thread to terminate.
     ExitMsg,
 }
 
 /// Messages to the supervisor.
-enum SupervisorMsg<QUD,WUD> {
+enum SupervisorMsg<QueueData, WorkData> {
     FinishedMsg,
-    ReturnDequeMsg(uint, Worker<WorkUnit<QUD,WUD>>),
+    ReturnDequeMsg(uint, Worker<WorkUnit<QueueData, WorkData>>),
 }
 
 /// Information that the supervisor thread keeps about the worker threads.
-struct WorkerInfo<QUD,WUD> {
+struct WorkerInfo<QueueData, WorkData> {
     /// The communication channel to the workers.
-    chan: Chan<WorkerMsg<QUD,WUD>>,
+    chan: Sender<WorkerMsg<QueueData, WorkData>>,
     /// The buffer pool for this deque.
-    pool: BufferPool<WorkUnit<QUD,WUD>>,
+    pool: BufferPool<WorkUnit<QueueData, WorkData>>,
     /// The worker end of the deque, if we have it.
-    deque: Option<Worker<WorkUnit<QUD,WUD>>>,
+    deque: Option<Worker<WorkUnit<QueueData, WorkData>>>,
     /// The thief end of the work-stealing deque.
-    thief: Stealer<WorkUnit<QUD,WUD>>,
+    thief: Stealer<WorkUnit<QueueData, WorkData>>,
 }
 
 /// Information specific to each worker thread that the thread keeps.
-struct WorkerThread<QUD,WUD> {
+struct WorkerThread<QueueData, WorkData> {
     /// The index of this worker.
     index: uint,
     /// The communication port from the supervisor.
-    port: Port<WorkerMsg<QUD,WUD>>,
+    port: Receiver<WorkerMsg<QueueData, WorkData>>,
     /// The communication channel on which messages are sent to the supervisor.
-    chan: SharedChan<SupervisorMsg<QUD,WUD>>,
+    chan: Sender<SupervisorMsg<QueueData, WorkData>>,
     /// The thief end of the work-stealing deque for all other workers.
-    other_deques: ~[Stealer<WorkUnit<QUD,WUD>>],
+    other_deques: Vec<Stealer<WorkUnit<QueueData, WorkData>>>,
     /// The random number generator for this worker.
     rng: XorShiftRng,
 }
 
 static SPIN_COUNT: uint = 1000;
 
-impl<QUD:Send,WUD:Send> WorkerThread<QUD,WUD> {
+impl<QueueData: Send, WorkData: Send> WorkerThread<QueueData, WorkData> {
     /// The main logic. This function starts up the worker and listens for
     /// messages.
-    pub fn start(&mut self) {
+    fn start(&mut self) {
         loop {
             // Wait for a start message.
             let (mut deque, ref_count, queue_data) = match self.port.recv() {
@@ -92,7 +92,7 @@ impl<QUD:Send,WUD:Send> WorkerThread<QUD,WUD> {
                 // FIXME(pcwalton): Nasty workaround for the lack of labeled break/continue
                 // cross-crate.
                 let mut work_unit = unsafe {
-                    intrinsics::uninit()
+                    mem::uninit()
                 };
                 match deque.pop() {
                     Some(work) => work_unit = work,
@@ -102,7 +102,7 @@ impl<QUD:Send,WUD:Send> WorkerThread<QUD,WUD> {
                         let mut should_continue = true;
                         loop {
                             let victim = (self.rng.next_u32() as uint) % self.other_deques.len();
-                            match self.other_deques[victim].steal() {
+                            match self.other_deques.get_mut(victim).steal() {
                                 Empty | Abort => {
                                     // Continue.
                                 }
@@ -114,13 +114,13 @@ impl<QUD:Send,WUD:Send> WorkerThread<QUD,WUD> {
 
                             if i == SPIN_COUNT {
                                 match self.port.try_recv() {
-                                    Some(StopMsg) => {
+                                    Ok(StopMsg) => {
                                         should_continue = false;
                                         break
                                     }
-                                    Some(ExitMsg) => return,
-                                    Some(_) => fail!("unexpected message"),
-                                    None => {}
+                                    Ok(ExitMsg) => return,
+                                    Ok(_) => fail!("unexpected message"),
+                                    _ => {}
                                 }
 
                                 i = 0
@@ -159,16 +159,16 @@ impl<QUD:Send,WUD:Send> WorkerThread<QUD,WUD> {
 }
 
 /// A handle to the work queue that individual work units have.
-pub struct WorkerProxy<'a,QUD,WUD> {
-    priv worker: &'a mut Worker<WorkUnit<QUD,WUD>>,
-    priv ref_count: *mut AtomicUint,
-    priv queue_data: *QUD,
+pub struct WorkerProxy<'a, QueueData, WorkData> {
+    worker: &'a mut Worker<WorkUnit<QueueData, WorkData>>,
+    ref_count: *mut AtomicUint,
+    queue_data: *QueueData,
 }
 
-impl<'a,QUD,WUD:Send> WorkerProxy<'a,QUD,WUD> {
+impl<'a, QueueData, WorkData: Send> WorkerProxy<'a, QueueData, WorkData> {
     /// Enqueues a block into the work queue.
     #[inline]
-    pub fn push(&mut self, work_unit: WorkUnit<QUD,WUD>) {
+    pub fn push(&mut self, work_unit: WorkUnit<QueueData, WorkData>) {
         unsafe {
             drop((*self.ref_count).fetch_add(1, SeqCst));
         }
@@ -177,7 +177,7 @@ impl<'a,QUD,WUD:Send> WorkerProxy<'a,QUD,WUD> {
 
     /// Retrieves the queue user data.
     #[inline]
-    pub fn user_data<'a>(&'a self) -> &'a QUD {
+    pub fn user_data<'a>(&'a self) -> &'a QueueData {
         unsafe {
             cast::transmute(self.queue_data)
         }
@@ -185,26 +185,26 @@ impl<'a,QUD,WUD:Send> WorkerProxy<'a,QUD,WUD> {
 }
 
 /// A work queue on which units of work can be submitted.
-pub struct WorkQueue<QUD,WUD> {
+pub struct WorkQueue<QueueData, WorkData> {
     /// Information about each of the workers.
-    priv workers: ~[WorkerInfo<QUD,WUD>],
+    workers: Vec<WorkerInfo<QueueData, WorkData>>,
     /// A port on which deques can be received from the workers.
-    priv port: Port<SupervisorMsg<QUD,WUD>>,
+    port: Receiver<SupervisorMsg<QueueData, WorkData>>,
     /// The amount of work that has been enqueued.
-    priv work_count: uint,
+    work_count: uint,
     /// Arbitrary user data.
-    data: QUD,
+    pub data: QueueData,
 }
 
-impl<QUD:Send,WUD:Send> WorkQueue<QUD,WUD> {
+impl<QueueData: Send, WorkData: Send> WorkQueue<QueueData, WorkData> {
     /// Creates a new work queue and spawns all the threads associated with
     /// it.
-    pub fn new(thread_count: uint, user_data: QUD) -> WorkQueue<QUD,WUD> {
+    pub fn new(task_name: &'static str, thread_count: uint, user_data: QueueData) -> WorkQueue<QueueData, WorkData> {
         // Set up data structures.
-        let (supervisor_port, supervisor_chan) = SharedChan::new();
-        let (mut infos, mut threads) = (~[], ~[]);
+        let (supervisor_chan, supervisor_port) = channel();
+        let (mut infos, mut threads) = (vec!(), vec!());
         for i in range(0, thread_count) {
-            let (worker_port, worker_chan) = Chan::new();
+            let (worker_chan, worker_port) = channel();
             let mut pool = BufferPool::new();
             let (worker, thief) = pool.deque();
             infos.push(WorkerInfo {
@@ -217,7 +217,7 @@ impl<QUD:Send,WUD:Send> WorkQueue<QUD,WUD> {
                 index: i,
                 port: worker_port,
                 chan: supervisor_chan.clone(),
-                other_deques: ~[],
+                other_deques: vec!(),
                 rng: rand::weak_rng(),
             });
         }
@@ -226,15 +226,17 @@ impl<QUD:Send,WUD:Send> WorkQueue<QUD,WUD> {
         for i in range(0, thread_count) {
             for j in range(0, thread_count) {
                 if i != j {
-                    threads[i].other_deques.push(infos[j].thief.clone())
+                    threads.get_mut(i).other_deques.push(infos.get(j).thief.clone())
                 }
             }
-            assert!(threads[i].other_deques.len() == thread_count - 1)
+            assert!(threads.get(i).other_deques.len() == thread_count - 1)
         }
 
         // Spawn threads.
         for thread in threads.move_iter() {
-            native::task::spawn(proc() {
+            let mut opts = TaskOpts::new();
+            opts.name = Some(task_name.into_maybe_owned());
+            native::task::spawn_opts(opts, proc() {
                 let mut thread = thread;
                 thread.start()
             })
@@ -250,8 +252,8 @@ impl<QUD:Send,WUD:Send> WorkQueue<QUD,WUD> {
 
     /// Enqueues a block into the work queue.
     #[inline]
-    pub fn push(&mut self, work_unit: WorkUnit<QUD,WUD>) {
-        match self.workers[0].deque {
+    pub fn push(&mut self, work_unit: WorkUnit<QueueData, WorkData>) {
+        match self.workers.get_mut(0).deque {
             None => {
                 fail!("tried to push a block but we don't have the deque?!")
             }
@@ -280,7 +282,7 @@ impl<QUD:Send,WUD:Send> WorkQueue<QUD,WUD> {
         // Get our deques back.
         for _ in range(0, self.workers.len()) {
             match self.port.recv() {
-                ReturnDequeMsg(index, deque) => self.workers[index].deque = Some(deque),
+                ReturnDequeMsg(index, deque) => self.workers.get_mut(index).deque = Some(deque),
                 FinishedMsg => fail!("unexpected finished message!"),
             }
         }

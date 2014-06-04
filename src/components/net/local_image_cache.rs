@@ -11,13 +11,13 @@ multiple times and thus triggering reflows multiple times.
 use image_cache_task::{Decode, GetImage, ImageCacheTask, ImageFailed, ImageNotReady, ImageReady};
 use image_cache_task::{ImageResponseMsg, Prefetch, WaitForImage};
 
-use std::comm::Port;
+use std::comm::{Receiver, channel};
 use servo_util::url::{UrlMap, url_map};
-use extra::url::Url;
 use servo_util::task::spawn_named;
+use url::Url;
 
 pub trait ImageResponder {
-    fn respond(&self) -> proc(ImageResponseMsg);
+    fn respond(&self) -> proc(ImageResponseMsg):Send;
 }
 
 pub fn LocalImageCache(image_cache_task: ImageCacheTask) -> LocalImageCache {
@@ -30,10 +30,10 @@ pub fn LocalImageCache(image_cache_task: ImageCacheTask) -> LocalImageCache {
 }
 
 pub struct LocalImageCache {
-    priv image_cache_task: ImageCacheTask,
-    priv round_number: uint,
-    priv on_image_available: Option<~ImageResponder:Send>,
-    priv state_map: UrlMap<ImageState>
+    image_cache_task: ImageCacheTask,
+    round_number: uint,
+    on_image_available: Option<Box<ImageResponder:Send>>,
+    state_map: UrlMap<ImageState>
 }
 
 #[deriving(Clone)]
@@ -47,7 +47,7 @@ struct ImageState {
 impl LocalImageCache {
     /// The local cache will only do a single remote request for a given
     /// URL in each 'round'. Layout should call this each time it begins
-    pub fn next_round(&mut self, on_image_available: ~ImageResponder:Send) {
+    pub fn next_round(&mut self, on_image_available: Box<ImageResponder:Send>) {
         self.round_number += 1;
         self.on_image_available = Some(on_image_available);
     }
@@ -78,7 +78,7 @@ impl LocalImageCache {
     }
 
     // FIXME: Should return a Future
-    pub fn get_image(&mut self, url: &Url) -> Port<ImageResponseMsg> {
+    pub fn get_image(&mut self, url: &Url) -> Receiver<ImageResponseMsg> {
         {
             let state = self.get_state(url);
 
@@ -89,13 +89,13 @@ impl LocalImageCache {
 
             match state.last_response {
                 ImageReady(ref image) => {
-                    let (port, chan) = Chan::new();
+                    let (chan, port) = channel();
                     chan.send(ImageReady(image.clone()));
                     return port;
                 }
                 ImageNotReady => {
                     if last_round == self.round_number {
-                        let (port, chan) = Chan::new();
+                        let (chan, port) = channel();
                         chan.send(ImageNotReady);
                         return port;
                     } else {
@@ -104,14 +104,14 @@ impl LocalImageCache {
                     }
                 }
                 ImageFailed => {
-                    let (port, chan) = Chan::new();
+                    let (chan, port) = channel();
                     chan.send(ImageFailed);
                     return port;
                 }
             }
         }
 
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = channel();
         self.image_cache_task.send(GetImage((*url).clone(), response_chan));
 
         let response = response_port.recv();
@@ -124,13 +124,13 @@ impl LocalImageCache {
                 // on the image to load and triggering layout
                 let image_cache_task = self.image_cache_task.clone();
                 assert!(self.on_image_available.is_some());
-                let on_image_available = self.on_image_available.as_ref().unwrap().respond();
+                let on_image_available: proc(ImageResponseMsg):Send = self.on_image_available.as_ref().unwrap().respond();
                 let url = (*url).clone();
-                do spawn_named("LocalImageCache") {
-                    let (response_port, response_chan) = Chan::new();
+                spawn_named("LocalImageCache", proc() {
+                    let (response_chan, response_port) = channel();
                     image_cache_task.send(WaitForImage(url.clone(), response_chan));
                     on_image_available(response_port.recv());
-                }
+                });
             }
             _ => ()
         }
@@ -143,7 +143,7 @@ impl LocalImageCache {
         };
         self.get_state(url).last_response = response_copy;
 
-        let (port, chan) = Chan::new();
+        let (chan, port) = channel();
         chan.send(response);
         return port;
     }
@@ -161,4 +161,3 @@ impl LocalImageCache {
         state
     }
 }
-

@@ -56,12 +56,12 @@ pub trait ApplicationMethods {
 
 pub trait WindowMethods<A> {
     /// Creates a new window.
-    fn new(app: &A) -> Rc<Self>;
+    fn new(app: &A, is_foreground: bool) -> Rc<Self>;
     /// Returns the size of the window.
     fn size(&self) -> Size2D<f32>;
     /// Presents the window to the screen (perhaps by page flipping).
     fn present(&self);
- 
+
     /// Spins the event loop and returns the next event.
     fn recv(&self) -> WindowEvent;
 

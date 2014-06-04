@@ -17,14 +17,19 @@ interface Document : Node {
   readonly attribute DOMString compatMode;
   readonly attribute DOMString characterSet;
   readonly attribute DOMString contentType;
+  readonly attribute Location location;
 
   readonly attribute DocumentType? doctype;
   readonly attribute Element? documentElement;
   HTMLCollection getElementsByTagName(DOMString localName);
+  HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
+  HTMLCollection getElementsByClassName(DOMString classNames);
   Element? getElementById(DOMString elementId);
 
   [Creator, Throws]
   Element createElement(DOMString localName);
+  [Creator, Throws]
+  Element createElementNS(DOMString? namespace, DOMString qualifiedName);
   [Creator]
   DocumentFragment createDocumentFragment();
   [Creator]
@@ -34,6 +39,11 @@ interface Document : Node {
   [Creator, Throws]
   ProcessingInstruction createProcessingInstruction(DOMString target, DOMString data);
 
+  [Throws]
+  Node importNode(Node node, optional boolean deep = false);
+  [Throws]
+  Node adoptNode(Node node);
+
   [Creator, Throws]
   Event createEvent(DOMString interface_);
 };
@@ -42,9 +52,10 @@ interface Document : Node {
 partial interface Document {
            [SetterThrows]
            attribute DOMString title;
+           [SetterThrows]
            attribute HTMLElement? body;
   readonly attribute HTMLHeadElement? head;
-  /*NodeList*/ HTMLCollection getElementsByName(DOMString elementName);
+  NodeList getElementsByName(DOMString elementName);
 
   readonly attribute HTMLCollection images;
   readonly attribute HTMLCollection embeds;
@@ -55,3 +66,6 @@ partial interface Document {
   readonly attribute HTMLCollection anchors;
   readonly attribute HTMLCollection applets;
 };
+
+Document implements ParentNode;
+Document implements GlobalEventHandlers;

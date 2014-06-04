@@ -27,26 +27,22 @@ B := $(CFG_BUILD_DIR)
 %:: s.%
 %:: SCCS/s.%
 
-MKFILE_DEPS := config.stamp $(call rwildcard,$(S)mk/,*)
+MKFILE_DEPS := $(CFG_BUILD_HOME)config.stamp $(call rwildcard,$(S)mk/,*)
 
 CFG_GCCISH_CFLAGS += -DRUST_DEBUG
+CFG_RUSTC_FLAGS += -D unused-imports
 
 ifdef CFG_DISABLE_OPTIMIZE
   $(info cfg: disabling rustc optimization (CFG_DISABLE_OPTIMIZE))
   CFG_RUSTC_FLAGS +=
 else
-  CFG_RUSTC_FLAGS += -O -Z no-debug-borrows
+  CFG_RUSTC_FLAGS += -O
 endif
 
+CFG_RUSTC_FLAGS += -g
 ifdef CFG_ENABLE_DEBUG
-  $(info cfg: enabling more debugging (CFG_ENABLE_DEBUG))
-  CFG_RUSTC_FLAGS += -Z extra-debug-info
-  CFG_RUSTC_SELF_FLAGS += -Z extra-debug-info
-else
-  # Enable debug!() etc even without configure --enable-debug
-  # The evaluation of these prints & their arguments is controlled
-  # at runtime by the environment variable RUST_LOG.
-  CFG_RUSTC_FLAGS += -Z debug-info
+  $(info cfg: enabling more debugging in RUSTC (CFG_ENABLE_DEBUG))
+  CFG_RUSTC_SELF_FLAGS += -g
 endif
 
 export CFG_RUSTC
@@ -79,12 +75,12 @@ endif
 ifeq ($(NEED_GIT_RECONFIG),0)
 else
 # If the submodules have changed then always execute config.mk
-.PHONY: $(S)config.stamp
+.PHONY: $(CFG_BUILD_HOME)config.stamp
 endif
 
-$(S)Makefile $(S)config.mk: $(S)config.stamp
+$(CFG_BUILD_HOME)Makefile $(CFG_BUILD_HOME)config.mk: $(CFG_BUILD_HOME)config.stamp
 
-$(S)config.stamp : $(S)configure $(S)Makefile.in
+$(CFG_BUILD_HOME)config.stamp : $(S)configure $(S)Makefile.in
 	@$(call E, cfg: reconfiguring)
 	$(Q)$(S)configure $(CFG_CONFIGURE_ARGS)
 
@@ -110,6 +106,12 @@ $(B)src/compiler/rust/rust-auto-clean-stamp: $(S)src/compiler/rust-auto-clean-tr
 	touch $@
 
 rust: $(CFG_RUSTC)
+
+# These arguments are automatically provided by the Rust compiler's build process to
+# itself, so they must be specified later for our Rust modules.
+ifeq ($(CFG_OSTYPE),linux-androideabi)
+  CFG_RUSTC_FLAGS += --target arm-linux-androideabi -C android-cross-path=$(CFG_ANDROID_CROSS_PATH)
+endif
 
 # Strip off submodule paths to determine "raw" submodule names.
 SUBMODULES=$(shell echo $(CFG_SUBMODULES) | perl -p -e 's![A-Za-z0-9_-]+/!!g')
@@ -162,12 +164,13 @@ endef
 # Define how to make submodule targets
 define DEF_SUBMODULE_RULES
 
-ENV_RLDFLAGS_$(1) = -L $$(CFG_BUILD_HOME)workspace/lib/$$(CFG_TARGET_TRIPLES)
+ENV_RLDFLAGS_$(1) = -L $$(CFG_BUILD_HOME)workspace/lib/$$(CFG_TARGET)
 ENV_RLDFLAGS_$(1) += $$(foreach dep,$$(DEPS_$(1)),-L $$(B)src/$$(PATH_$$(dep)) -L $$(B)src/$$(PATH_$$(dep))/.libs -L $$(B)src/$$(PATH_$$(dep))/src/.libs)
 
 # variables that depend on dependency definitions from sub.mk!
 ENV_CFLAGS_$(1) = CFLAGS="$$(CFLAGS_$(1))"
 ENV_RFLAGS_$(1) = RUSTFLAGS="$$(strip $$(CFG_RUSTC_FLAGS)) $$(ENV_RLDFLAGS_$(1))"
+ENV_EXT_DEPS_$(1) = EXT_DEPS="$$(DONE_DEPS_$(1))"
 
 # Native builds do not depend on the rust compiler, so we can build them in parallel with rustc
 RUSTC_DEP_$(1)=
@@ -193,6 +196,7 @@ $$(DONE_$(1)) : $$(DONE_DEPS_$(1)) $$(ROUGH_DEPS_$(1)) $$(RUSTC_DEP_$(1))
 	$$(ENV_CFLAGS_$(1)) \
 	$$(ENV_CXXFLAGS_$(1)) \
 	$$(ENV_RFLAGS_$(1)) \
+	$$(ENV_EXT_DEPS_$(1)) \
     $$(CROSS_COMPILER_CC) \
     $$(CROSS_COMPILER_CXX) \
     $$(CROSS_COMPILER_LD) \
@@ -208,6 +212,13 @@ $(foreach submodule,$(SUBMODULES),\
 $(eval $(call DEF_SUBMODULE_RULES,$(submodule))))
 
 DONE_SUBMODULES = $(foreach submodule,$(SUBMODULES),$(DONE_$(submodule)))
+
+RFLAGS_macros = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES))
+SRC_macros = $(call rwildcard,$(S)src/components/macros/,*.rs)
+CRATE_macros = $(S)src/components/macros/macros.rs
+DONE_macros = $(B)src/components/macros/libmacros.dummy
+
+DEPS_macros = $(CRATE_macros) $(SRC_macros) $(DONE_SUBMODULES)
 
 RFLAGS_util = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES))
 SRC_util = $(call rwildcard,$(S)src/components/util/,*.rs)
@@ -230,14 +241,14 @@ DONE_msg = $(B)src/components/msg/libmsg.dummy
 
 DEPS_msg = $(CRATE_msg) $(SRC_msg) $(DONE_SUBMODULES)
 
-RFLAGS_gfx = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/util -L $(B)src/components/style -L $(B)src/components/net -L $(B)src/components/msg
+RFLAGS_gfx = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/util -L $(B)src/components/style -L $(B)src/components/net -L $(B)src/components/msg -L$(B)src/components/macros
 SRC_gfx = $(call rwildcard,$(S)src/components/gfx/,*.rs)
 CRATE_gfx = $(S)src/components/gfx/gfx.rs
 DONE_gfx = $(B)src/components/gfx/libgfx.dummy
 
-DEPS_gfx = $(CRATE_gfx) $(SRC_gfx) $(DONE_SUBMODULES) $(DONE_util) $(DONE_style) $(DONE_net) $(DONE_msg)
+DEPS_gfx = $(CRATE_gfx) $(SRC_gfx) $(DONE_SUBMODULES) $(DONE_util) $(DONE_style) $(DONE_net) $(DONE_msg) $(DONE_macros)
 
-RFLAGS_script = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/util -L $(B)src/components/style -L $(B)src/components/net -L $(B)src/components/msg
+RFLAGS_script = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/util -L $(B)src/components/style -L $(B)src/components/net -L $(B)src/components/msg -L$(B)src/components/macros
 
 BINDINGS_SRC = $(S)src/components/script/dom/bindings/codegen
 WEBIDLS_SRC = $(S)src/components/script/dom/webidls
@@ -250,26 +261,26 @@ SRC_script = $(call rwildcard,$(S)src/components/script/,*.rs) $(AUTOGEN_SRC_scr
 CRATE_script = $(S)src/components/script/script.rs
 DONE_script = $(B)src/components/script/libscript.dummy
 
-DEPS_script = $(CRATE_script) $(SRC_script) $(DONE_SUBMODULES) $(DONE_util) $(DONE_style) $(DONE_net) $(DONE_msg)
+DEPS_script = $(CRATE_script) $(SRC_script) $(DONE_SUBMODULES) $(DONE_util) $(DONE_style) $(DONE_net) $(DONE_msg) $(DONE_macros)
 
-RFLAGS_style = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/util
-MAKO_ZIP = $(S)src/components/style/Mako-0.8.1.zip
+RFLAGS_style = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/util -L$(B)src/components/macros
+MAKO_ZIP = $(S)src/components/style/Mako-0.9.1.zip
 MAKO_style = $(S)src/components/style/properties.rs
 MAKO_SRC_style = $(MAKO_style).mako
 SRC_style = $(call rwildcard,$(S)src/components/style/,*.rs) $(MAKO_style)
 CRATE_style = $(S)src/components/style/style.rs
 DONE_style = $(B)src/components/style/libstyle.dummy
 
-DEPS_style = $(CRATE_style) $(SRC_style) $(DONE_SUBMODULES) $(DONE_util)
+DEPS_style = $(CRATE_style) $(SRC_style) $(DONE_SUBMODULES) $(DONE_util) $(DONE_macros)
 
-RFLAGS_servo = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/gfx -L $(B)src/components/util -L $(B)src/components/net -L $(B)src/components/script -L $(B)src/components/style -L $(B)src/components/msg
+RFLAGS_servo = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/gfx -L $(B)src/components/util -L $(B)src/components/net -L $(B)src/components/script -L $(B)src/components/style -L $(B)src/components/msg -L$(B)src/components/macros
 
 SRC_servo = $(call rwildcard,$(S)src/components/main/,*.rs)
 CRATE_servo = $(S)src/components/main/servo.rs
 
-DEPS_servo = $(CRATE_servo) $(SRC_servo) $(DONE_SUBMODULES) $(DONE_util) $(DONE_gfx) $(DONE_script) $(DONE_net) $(DONE_msg) $(DONE_style)
+DEPS_servo = $(CRATE_servo) $(SRC_servo) $(DONE_SUBMODULES) $(DONE_util) $(DONE_gfx) $(DONE_script) $(DONE_net) $(DONE_msg) $(DONE_style) $(DONE_macros)
 
-SERVO_LIB_CRATES = util net msg gfx script style
+SERVO_LIB_CRATES = macros util net msg gfx script style
 
 # rules that depend on having correct meta-target vars (DEPS_CLEAN, DEPS_servo, etc)
 # and SERVO_LIB_CRATES
@@ -278,7 +289,6 @@ include $(S)mk/clean.mk
 
 .DEFAULT_GOAL := all
 .PHONY:	all
-all: servo
 
 # Servo helper libraries
 
@@ -301,14 +311,16 @@ $(AUTOGEN_SRC_script): $(BINDINGS_SRC)/%Binding.rs: $(bindinggen_dependencies) \
 	$(Q) $(CFG_PYTHON2) $(BINDINGS_SRC)/pythonpath.py \
 	  -I$(BINDINGS_SRC)/parser -I$(BINDINGS_SRC)/ply \
 	  -D$(BINDINGS_SRC) \
-	  $(BINDINGS_SRC)/BindingGen.py rs \
+	  $(BINDINGS_SRC)/BindingGen.py \
 	  $(BINDINGS_SRC)/Bindings.conf $*Binding $(addprefix $(WEBIDLS_SRC)/, $*.webidl)
 	$(Q)touch $@
 
 globalgen_dependencies := $(addprefix $(BINDINGS_SRC)/, GlobalGen.py Bindings.conf Configuration.py CodegenRust.py parser/WebIDL.py) $(CACHE_DIR)/.done
 
 $(MAKO_style): $(MAKO_SRC_style)
-	PYTHONPATH=$(MAKO_ZIP) python -c "from mako.template import Template; print(Template(filename='$<').render())" > $@
+# Use a temporary file to avoid writing an empty (but more recent) file on failure.
+	PYTHONPATH=$(MAKO_ZIP) $(CFG_PYTHON2) -c "from mako.template import Template; print(Template(filename='$<').render())" > $@.tmp
+	mv $@.tmp $@
 
 
 $(CACHE_DIR)/.done:
@@ -327,13 +339,30 @@ $(BINDINGS_SRC)/ParserResults.pkl: $(globalgen_dependencies) \
 # Servo binaries
 
 ifneq ($(CFG_OSTYPE),linux-androideabi)
+all: servo servo-embedding
 servo:	$(DEPS_servo)
 	@$(call E, compile: $@)
-	$(Q)$(RUSTC) $(RFLAGS_servo) -o $@ $< --bin
+	$(Q)$(RUSTC) $(RFLAGS_servo) -o servo $< --crate-type bin
+	$(Q)$(RUSTC) $(RFLAGS_servo) $< --crate-type dylib,rlib
+
+RFLAGS_embedding = $(strip $(CFG_RUSTC_FLAGS)) $(addprefix -L $(B)src/,$(DEPS_SUBMODULES)) -L $(B)src/components/gfx -L $(B)src/components/util -L $(B)src/components/net -L $(B)src/components/script -L $(B)src/components/style -L $(B)src/components/msg -L $(B).. -L $(B)src/components/main -L $(B)src/components/macros -A non_camel_case_types -A unused_variable
+
+ifeq ($(CFG_OSTYPE),apple-darwin)
+RFLAGS_embedding += -C link-args="-Wl,-U,_tc_new -Wl,-U,_tc_newarray -Wl,-U,_tc_delete -Wl,-U,_tc_deletearray"
+endif
+SRC_embedding = $(call rwildcard,$(S)src/components/embedding/,*.rs)
+CRATE_embedding = $(S)src/components/embedding/embedding.rs
+
+servo-embedding: servo $(SRC_embedding) $(CRATE_embedding)
+	@$(call E, compile: $@)
+	$(Q)$(RUSTC) $(RFLAGS_embedding) $(CRATE_embedding) --crate-type dylib,rlib
+	touch servo-embedding
 else
+all: servo
 servo:  $(DEPS_servo)
 	@$(call E, compile: $@)
-	$(Q)$(RUSTC) $(RFLAGS_servo) -Z gen-crate-map -o $@ $< --lib
+	$(Q)$(RUSTC) $(RFLAGS_servo) $< -o libservo.so --crate-type dylib
+	touch servo
 endif
 
 # Darwin app packaging
@@ -351,12 +380,11 @@ package: servo
 else ifeq ($(CFG_OSTYPE),linux-androideabi)
 package: servo
 	mkdir -p sofile
-	-exec cp -f {} $(CFG_BUILD_HOME)sofile \;
-	find . ! \( \( -type d -path './sofile' -o -path './$(CFG_TARGET_TRIPLES)/src/compiler/rust' \) -prune \) -name '*.so' -type f | xargs cp -f -t $(CFG_BUILD_HOME)sofile
-	find $(CFG_RUST_HOME)/lib/rustc/$(CFG_TARGET_TRIPLES)/lib/ -name '*.so' -type f -size +1c | xargs cp -f -t $(CFG_BUILD_HOME)sofile
+	find . ! \( \( -type d -path './sofile' -o -path './$(CFG_TARGET)/src/compiler/rust' \) -prune \) -name '*.so' -type f | xargs -I {} cp -f {} $(CFG_BUILD_HOME)sofile/
+	find $(CFG_RUST_HOME)/lib/rustlib/$(CFG_TARGET)/lib/ -name '*.so' -type f -size +1c | xargs -I {} cp -f {} $(CFG_BUILD_HOME)sofile/
 	cd $(S)src/platform/android/servo-android-glue && make with-libs
 	cd $(CFG_BUILD_HOME)
-	cp $(S)src/platform/android/servo-android-glue/bin/ServoAndroid-debug.apk -t $(CFG_BUILD_HOME)
+	cp $(S)src/platform/android/servo-android-glue/bin/ServoAndroid-debug.apk $(CFG_BUILD_HOME)
 
 else
 

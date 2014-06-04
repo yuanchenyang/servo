@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLHRElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLHRElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLHRElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLHRElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -15,69 +15,79 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLHRElement {
-    htmlelement: HTMLElement,
+    pub htmlelement: HTMLElement,
 }
 
 impl HTMLHRElementDerived for EventTarget {
     fn is_htmlhrelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLHRElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLHRElementTypeId))
     }
 }
 
 impl HTMLHRElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLHRElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLHRElement {
         HTMLHRElement {
             htmlelement: HTMLElement::new_inherited(HTMLHRElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLHRElement> {
-        let element = HTMLHRElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLHRElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLHRElement> {
+        let element = HTMLHRElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLHRElementBinding::Wrap)
     }
 }
 
-impl HTMLHRElement {
-    pub fn Align(&self) -> DOMString {
-        ~""
+pub trait HTMLHRElementMethods {
+    fn Align(&self) -> DOMString;
+    fn SetAlign(&mut self, _align: DOMString) -> ErrorResult;
+    fn Color(&self) -> DOMString;
+    fn SetColor(&mut self, _color: DOMString) -> ErrorResult;
+    fn NoShade(&self) -> bool;
+    fn SetNoShade(&self, _no_shade: bool) -> ErrorResult;
+    fn Size(&self) -> DOMString;
+    fn SetSize(&mut self, _size: DOMString) -> ErrorResult;
+    fn Width(&self) -> DOMString;
+    fn SetWidth(&mut self, _width: DOMString) -> ErrorResult;
+}
+
+impl<'a> HTMLHRElementMethods for JSRef<'a, HTMLHRElement> {
+    fn Align(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetAlign(&mut self, _align: DOMString) -> ErrorResult {
+    fn SetAlign(&mut self, _align: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Color(&self) -> DOMString {
-        ~""
+    fn Color(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetColor(&mut self, _color: DOMString) -> ErrorResult {
+    fn SetColor(&mut self, _color: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn NoShade(&self) -> bool {
+    fn NoShade(&self) -> bool {
         false
     }
 
-    pub fn SetNoShade(&self, _no_shade: bool) -> ErrorResult {
+    fn SetNoShade(&self, _no_shade: bool) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Size(&self) -> DOMString {
-        ~""
+    fn Size(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetSize(&mut self, _size: DOMString) -> ErrorResult {
+    fn SetSize(&mut self, _size: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Width(&self) -> DOMString {
-        ~""
+    fn Width(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetWidth(&mut self, _width: DOMString) -> ErrorResult {
+    fn SetWidth(&mut self, _width: DOMString) -> ErrorResult {
         Ok(())
     }
 }

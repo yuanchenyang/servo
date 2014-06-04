@@ -2,16 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use resource_task::{Metadata, Payload, Done, LoadResponse, LoaderTask, start_sending};
+use resource_task::{Metadata, Payload, Done, LoadResponse, LoadData, LoaderTask, start_sending};
 
-use std::vec;
-use std::hashmap::HashSet;
-use extra::url::Url;
-use http::client::RequestWriter;
-use http::method::Get;
+use collections::hashmap::HashSet;
+use http::client::{RequestWriter, NetworkStream};
 use http::headers::HeaderEnum;
 use std::io::Reader;
 use servo_util::task::spawn_named;
+use url::Url;
 
 pub fn factory() -> LoaderTask {
     let f: LoaderTask = proc(url, start_chan) {
@@ -20,17 +18,17 @@ pub fn factory() -> LoaderTask {
     f
 }
 
-fn send_error(url: Url, start_chan: Chan<LoadResponse>) {
-    start_sending(start_chan, Metadata::default(url)).send(Done(Err(())));
+fn send_error(url: Url, err: ~str, start_chan: Sender<LoadResponse>) {
+    start_sending(start_chan, Metadata::default(url)).send(Done(Err(err)));
 }
 
-fn load(mut url: Url, start_chan: Chan<LoadResponse>) {
+fn load(load_data: LoadData, start_chan: Sender<LoadResponse>) {
     // FIXME: At the time of writing this FIXME, servo didn't have any central
     //        location for configuration. If you're reading this and such a
     //        repository DOES exist, please update this constant to use it.
     let max_redirects = 50u;
     let mut iters = 0u;
-
+    let mut url = load_data.url.clone();
     let mut redirected_to = HashSet::new();
 
     // Loop to handle redirects.
@@ -38,28 +36,56 @@ fn load(mut url: Url, start_chan: Chan<LoadResponse>) {
         iters = iters + 1;
 
         if iters > max_redirects {
-            info!("too many redirects");
-            send_error(url, start_chan);
+            send_error(url, "too many redirects".to_owned(), start_chan);
             return;
         }
 
         if redirected_to.contains(&url) {
-            info!("redirect loop");
-            send_error(url, start_chan);
+            send_error(url, "redirect loop".to_owned(), start_chan);
             return;
         }
 
         redirected_to.insert(url.clone());
 
-        assert!("http" == url.scheme);
+        if "http" != url.scheme {
+            let s = format!("{:s} request, but we don't support that scheme", url.scheme);
+            send_error(url, s, start_chan);
+            return;
+        }
 
         info!("requesting {:s}", url.to_str());
 
-        let request = ~RequestWriter::new(Get, url.clone());
-        let mut response = match request.read_response() {
+        let request = RequestWriter::<NetworkStream>::new(load_data.method.clone(), url.clone());
+        let mut writer = match request {
+            Ok(w) => box w,
+            Err(e) => {
+                send_error(url, e.desc.to_owned(), start_chan);
+                return;
+            }
+        };
+
+        // Preserve the `host` header set automatically by RequestWriter.
+        let host = writer.headers.host.clone();
+        writer.headers = box load_data.headers.clone();
+        writer.headers.host = host;
+
+        match load_data.data {
+            Some(ref data) => {
+                writer.headers.content_length = Some(data.len());
+                match writer.write(data.clone().into_bytes().as_slice()) {
+                    Err(e) => {
+                        send_error(url, e.desc.to_owned(), start_chan);
+                        return;
+                    }
+                    _ => {}
+                }
+            },
+            _ => {}
+        }
+        let mut response = match writer.read_response() {
             Ok(r) => r,
-            Err(_) => {
-                send_error(url, start_chan);
+            Err((_, e)) => {
+                send_error(url, e.desc.to_owned(), start_chan);
                 return;
             }
         };
@@ -84,18 +110,19 @@ fn load(mut url: Url, start_chan: Chan<LoadResponse>) {
 
         let mut metadata = Metadata::default(url);
         metadata.set_content_type(&response.headers.content_type);
+        metadata.headers = Some(*response.headers.clone());
 
         let progress_chan = start_sending(start_chan, metadata);
         loop {
-            let mut buf = vec::with_capacity(1024);
+            let mut buf = Vec::with_capacity(1024);
 
             unsafe { buf.set_len(1024); }
-            match response.read(buf) {
-                Some(len) => {
+            match response.read(buf.as_mut_slice()) {
+                Ok(len) => {
                     unsafe { buf.set_len(len); }
                     progress_chan.send(Payload(buf));
                 }
-                None => {
+                Err(_) => {
                     progress_chan.send(Done(Ok(())));
                     break;
                 }

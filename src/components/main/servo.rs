@@ -2,49 +2,59 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#[crate_id = "github.com/mozilla/servo"];
-#[comment = "The Servo Parallel Browser Project"];
-#[license = "MPL"];
+#![crate_id = "github.com/mozilla/servo"]
+#![comment = "The Servo Parallel Browser Project"]
+#![license = "MPL"]
 
-#[feature(globs, macro_rules, managed_boxes, thread_local)];
+#![feature(globs, macro_rules, phase, thread_local)]
 
-extern mod alert;
-extern mod azure;
-extern mod geom;
-extern mod gfx;
+#[phase(syntax, link)]
+extern crate log;
+
+extern crate alert;
+extern crate azure;
+extern crate geom;
+extern crate gfx;
 #[cfg(not(target_os="android"))]
-extern mod glfw;
+extern crate glfw;
 #[cfg(target_os="android")]
-extern mod glut;
-extern mod js;
-extern mod layers;
-extern mod opengles;
-extern mod png;
-#[cfg(target_os="android")]
-extern mod rustuv;
-extern mod script;
-extern mod servo_net = "net";
-extern mod servo_msg = "msg";
-extern mod servo_util = "util";
-extern mod style;
-extern mod sharegl;
-extern mod stb_image;
+extern crate glut;
+extern crate js;
+extern crate layers;
+extern crate opengles;
+extern crate png;
+extern crate rustuv;
+extern crate script;
+#[phase(syntax)]
+extern crate servo_macros = "macros";
+extern crate servo_net = "net";
+extern crate servo_msg = "msg";
+#[phase(syntax, link)]
+extern crate servo_util = "util";
+extern crate style;
+extern crate sharegl;
+extern crate stb_image;
 
-extern mod extra;
-extern mod green;
-extern mod native;
+extern crate collections;
+extern crate green;
+extern crate libc;
+extern crate native;
+extern crate serialize;
+extern crate sync;
+extern crate time;
+extern crate url;
 
 #[cfg(target_os="macos")]
-extern mod core_graphics;
+extern crate core_graphics;
 #[cfg(target_os="macos")]
-extern mod core_text;
+extern crate core_text;
 
 #[cfg(not(test))]
 use compositing::{CompositorChan, CompositorTask};
 #[cfg(not(test))]
 use constellation::Constellation;
 #[cfg(not(test))]
-use servo_msg::constellation_msg::InitLoadUrlMsg;
+use servo_msg::constellation_msg::{ConstellationChan, InitLoadUrlMsg};
 
 #[cfg(not(test))]
 use servo_net::image_cache_task::{ImageCacheTask, SyncImageCacheTask};
@@ -58,20 +68,19 @@ use servo_util::opts;
 #[cfg(not(test))]
 use servo_util::url::parse_url;
 
-#[cfg(not(test))]
+
+#[cfg(not(test), not(target_os="android"))]
 use std::os;
-#[cfg(not(test))]
-use extra::url::Url;
 #[cfg(not(test), target_os="android")]
 use std::str;
 #[cfg(not(test))]
 use std::task::TaskOpts;
+#[cfg(not(test))]
+use url::Url;
 
 
 #[path="compositing/compositor_task.rs"]
 pub mod compositing;
-
-pub mod macros;
 
 pub mod css {
     mod node_util;
@@ -86,17 +95,23 @@ pub mod pipeline;
 
 pub mod layout {
     pub mod block;
-    pub mod box_;
     pub mod construct;
     pub mod context;
-    pub mod display_list_builder;
-    pub mod float_context;
+    pub mod floats;
     pub mod flow;
     pub mod flow_list;
+    pub mod fragment;
     pub mod layout_task;
     pub mod inline;
     pub mod model;
     pub mod parallel;
+    pub mod table_wrapper;
+    pub mod table;
+    pub mod table_caption;
+    pub mod table_colgroup;
+    pub mod table_rowgroup;
+    pub mod table_row;
+    pub mod table_cell;
     pub mod text;
     pub mod util;
     pub mod incremental;
@@ -112,35 +127,45 @@ pub mod windowing;
 #[path="platform/mod.rs"]
 pub mod platform;
 
-#[path = "util/mod.rs"]
-pub mod util;
-
 #[cfg(not(test), target_os="linux")]
 #[cfg(not(test), target_os="macos")]
 #[start]
+#[allow(dead_code)]
 fn start(argc: int, argv: **u8) -> int {
     native::start(argc, argv, proc() {
-        run(opts::from_cmdline_args(os::args()))
+        opts::from_cmdline_args(os::args()).map(run);
     })
 }
 
 #[cfg(not(test), target_os="android")]
 #[no_mangle]
+#[allow(dead_code)]
 pub extern "C" fn android_start(argc: int, argv: **u8) -> int {
     native::start(argc, argv, proc() {
-        let mut args:~[~str] = ~[];
+        let mut args: Vec<~str> = vec!();
         for i in range(0u, argc as uint) {
             unsafe {
                 args.push(str::raw::from_c_str(*argv.offset(i as int) as *i8));
             }
         }
-        run(opts::from_cmdline_args(args))
+
+        let mut opts = opts::from_cmdline_args(args.as_slice());
+        match opts {
+            Some(mut o) => {
+                // Always use CPU rendering on android.
+                o.cpu_painting = true;
+                run(o);
+            },
+            None => {}
+        }
     })
 }
 
 #[cfg(not(test))]
-fn run(opts: opts::Opts) {
-    let mut pool = green::SchedPool::new(green::PoolConfig::new());
+pub fn run(opts: opts::Opts) {
+    let mut pool_config = green::PoolConfig::new();
+    pool_config.event_loop_factory = rustuv::event_loop;
+    let mut pool = green::SchedPool::new(pool_config);
 
     let (compositor_port, compositor_chan) = CompositorChan::new();
     let profiler_chan = Profiler::create(opts.profiler_period);
@@ -148,7 +173,7 @@ fn run(opts: opts::Opts) {
     let opts_clone = opts.clone();
     let profiler_chan_clone = profiler_chan.clone();
 
-    let (result_port, result_chan) = Chan::new();
+    let (result_chan, result_port) = channel();
     pool.spawn(TaskOpts::new(), proc() {
         let opts = &opts_clone;
         // Create a Servo instance.
@@ -172,13 +197,14 @@ fn run(opts: opts::Opts) {
             let url = if filename.starts_with("data:") {
                 // As a hack for easier command-line testing,
                 // assume that data URLs are not URL-encoded.
-                Url::new(~"data", None, ~"", None,
-                    filename.slice_from(5).to_owned(), ~[], None)
+                Url::new("data".to_owned(), None, "".to_owned(), None,
+                    filename.slice_from(5).to_owned(), vec!(), None)
             } else {
                 parse_url(*filename, None)
             };
 
-            constellation_chan.send(InitLoadUrlMsg(url));
+            let ConstellationChan(ref chan) = constellation_chan;
+            chan.send(InitLoadUrlMsg(url));
         }
 
         // Send the constallation Chan as the result

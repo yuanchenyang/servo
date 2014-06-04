@@ -2,23 +2,34 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::AttrBinding;
-use dom::bindings::js::JS;
+use dom::bindings::codegen::BindingDeclarations::AttrBinding;
+use dom::bindings::codegen::InheritTypes::NodeCast;
+use dom::bindings::js::{JS, JSRef, Temporary};
 use dom::bindings::utils::{Reflectable, Reflector, reflect_dom_object};
+use dom::element::Element;
+use dom::node::Node;
 use dom::window::Window;
-use servo_util::namespace::{Namespace, Null};
+use dom::virtualmethods::vtable_for;
+use servo_util::namespace;
+use servo_util::namespace::Namespace;
 use servo_util::str::DOMString;
 
-use std::util;
+pub enum AttrSettingType {
+    FirstSetAttr,
+    ReplacedAttr,
+}
 
 #[deriving(Encodable)]
 pub struct Attr {
-    reflector_: Reflector,
-    local_name: DOMString,
-    value: DOMString,
-    name: DOMString,
-    namespace: Namespace,
-    prefix: Option<DOMString>
+    pub reflector_: Reflector,
+    pub local_name: DOMString,
+    pub value: DOMString,
+    pub name: DOMString,
+    pub namespace: Namespace,
+    pub prefix: Option<DOMString>,
+
+    /// the element that owns this attribute.
+    pub owner: JS<Element>,
 }
 
 impl Reflectable for Attr {
@@ -34,38 +45,44 @@ impl Reflectable for Attr {
 impl Attr {
     fn new_inherited(local_name: DOMString, value: DOMString,
                      name: DOMString, namespace: Namespace,
-                     prefix: Option<DOMString>) -> Attr {
+                     prefix: Option<DOMString>, owner: &JSRef<Element>) -> Attr {
         Attr {
             reflector_: Reflector::new(),
             local_name: local_name,
             value: value,
             name: name, //TODO: Intern attribute names
             namespace: namespace,
-            prefix: prefix
+            prefix: prefix,
+            owner: owner.unrooted(),
         }
     }
 
-    pub fn new(window: &Window, local_name: DOMString, value: DOMString) -> JS<Attr> {
-        let name = local_name.clone();
-        Attr::new_helper(window, local_name, value, name, Null, None)
+    pub fn new(window: &JSRef<Window>, local_name: DOMString, value: DOMString,
+               name: DOMString, namespace: Namespace,
+               prefix: Option<DOMString>, owner: &JSRef<Element>) -> Temporary<Attr> {
+        let attr = Attr::new_inherited(local_name, value, name, namespace, prefix, owner);
+        reflect_dom_object(box attr, window, AttrBinding::Wrap)
     }
 
-    pub fn new_ns(window: &Window, local_name: DOMString, value: DOMString,
-                  name: DOMString, namespace: Namespace,
-                  prefix: Option<DOMString>) -> JS<Attr> {
-        Attr::new_helper(window, local_name, value, name, namespace, prefix)
-    }
+    pub fn set_value(&mut self, set_type: AttrSettingType, value: DOMString) {
+        let mut owner = self.owner.root();
+        let node: &mut JSRef<Node> = NodeCast::from_mut_ref(&mut *owner);
+        let namespace_is_null = self.namespace == namespace::Null;
 
-    fn new_helper(window: &Window, local_name: DOMString, value: DOMString,
-                  name: DOMString, namespace: Namespace,
-                  prefix: Option<DOMString>) -> JS<Attr> {
-        let attr = Attr::new_inherited(local_name, value, name, namespace, prefix);
-        reflect_dom_object(~attr, window, AttrBinding::Wrap)
-    }
+        match set_type {
+            ReplacedAttr => {
+                if namespace_is_null {
+                    vtable_for(node).before_remove_attr(self.local_name.clone(), self.value.clone());
+                }
+            }
+            FirstSetAttr => {}
+        }
 
-    pub fn set_value(&mut self, mut value: DOMString) -> DOMString {
-        util::swap(&mut self.value, &mut value);
-        value
+        self.value = value;
+
+        if namespace_is_null {
+            vtable_for(node).after_set_attr(self.local_name.clone(), self.value.clone());
+        }
     }
 
     pub fn value_ref<'a>(&'a self) -> &'a str {
@@ -73,31 +90,40 @@ impl Attr {
     }
 }
 
-impl Attr {
-    pub fn LocalName(&self) -> DOMString {
+pub trait AttrMethods {
+    fn LocalName(&self) -> DOMString;
+    fn Value(&self) -> DOMString;
+    fn SetValue(&mut self, value: DOMString);
+    fn Name(&self) -> DOMString;
+    fn GetNamespaceURI(&self) -> Option<DOMString>;
+    fn GetPrefix(&self) -> Option<DOMString>;
+}
+
+impl<'a> AttrMethods for JSRef<'a, Attr> {
+    fn LocalName(&self) -> DOMString {
         self.local_name.clone()
     }
 
-    pub fn Value(&self) -> DOMString {
+    fn Value(&self) -> DOMString {
         self.value.clone()
     }
 
-    pub fn SetValue(&mut self, value: DOMString) {
-        self.value = value;
+    fn SetValue(&mut self, value: DOMString) {
+        self.set_value(ReplacedAttr, value);
     }
 
-    pub fn Name(&self) -> DOMString {
+    fn Name(&self) -> DOMString {
         self.name.clone()
     }
 
-    pub fn GetNamespaceURI(&self) -> Option<DOMString> {
+    fn GetNamespaceURI(&self) -> Option<DOMString> {
         match self.namespace.to_str() {
             "" => None,
             url => Some(url.to_owned()),
         }
     }
 
-    pub fn GetPrefix(&self) -> Option<DOMString> {
+    fn GetPrefix(&self) -> Option<DOMString> {
         self.prefix.clone()
     }
 }

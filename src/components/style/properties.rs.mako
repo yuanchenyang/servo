@@ -4,11 +4,12 @@
 
 // This file is a Mako template: http://www.makotemplates.org/
 
-use std::ascii::StrAsciiExt;
+pub use std::ascii::StrAsciiExt;
+use serialize::{Encodable, Encoder};
+
 pub use servo_util::url::parse_url;
-pub use extra::arc::Arc;
-pub use extra::url::Url;
-use servo_util::cowarc::CowArc;
+use sync::Arc;
+pub use url::Url;
 
 pub use cssparser::*;
 pub use cssparser::ast::*;
@@ -18,23 +19,34 @@ pub use parsing_utils::*;
 pub use self::common_types::*;
 use selector_matching::MatchedProperty;
 
-use extra::serialize::{Encodable, Encoder};
 
+pub use self::property_bit_field::PropertyBitField;
 pub mod common_types;
+
 
 <%!
 
+import re
+
 def to_rust_ident(name):
     name = name.replace("-", "_")
-    if name in ["static", "super"]:  # Rust keywords
+    if name in ["static", "super", "box"]:  # Rust keywords
         name += "_"
     return name
 
 class Longhand(object):
-    def __init__(self, name):
+    def __init__(self, name, derived_from=None):
         self.name = name
         self.ident = to_rust_ident(name)
+        self.camel_case, _ = re.subn(
+            "_([a-z])",
+            lambda m: m.group(1).upper(),
+            self.ident.strip("_").capitalize())
         self.style_struct = THIS_STYLE_STRUCT
+        if derived_from is None:
+            self.derived_from = None
+        else:
+            self.derived_from = [ to_rust_ident(name) for name in derived_from ]
 
 class Shorthand(object):
     def __init__(self, name, sub_properties):
@@ -45,6 +57,7 @@ class Shorthand(object):
 class StyleStruct(object):
     def __init__(self, name, inherited):
         self.name = name
+        self.ident = to_rust_ident(name.lower())
         self.longhands = []
         self.inherited = inherited
 
@@ -52,6 +65,7 @@ STYLE_STRUCTS = []
 THIS_STYLE_STRUCT = None
 LONGHANDS = []
 LONGHANDS_BY_NAME = {}
+DERIVED_LONGHANDS = {}
 SHORTHANDS = []
 
 def new_style_struct(name, is_inherited):
@@ -80,12 +94,19 @@ pub mod longhands {
         value
     }
 
-    <%def name="raw_longhand(name, no_super=False)">
+    <%def name="raw_longhand(name, no_super=False, derived_from=None)">
     <%
-        property = Longhand(name)
+        if derived_from is not None:
+            derived_from = derived_from.split()
+
+        property = Longhand(name, derived_from=derived_from)
         THIS_STYLE_STRUCT.longhands.append(property)
         LONGHANDS.append(property)
         LONGHANDS_BY_NAME[name] = property
+
+        if derived_from is not None:
+            for name in derived_from:
+                DERIVED_LONGHANDS.setdefault(name, []).append(property)
     %>
         pub mod ${property.ident} {
             % if not no_super:
@@ -93,30 +114,34 @@ pub mod longhands {
             % endif
             pub use self::computed_value::*;
             ${caller.body()}
-            pub fn parse_declared(input: &[ComponentValue], base_url: &Url)
-                               -> Option<DeclaredValue<SpecifiedValue>> {
-                match CSSWideKeyword::parse(input) {
-                    Some(Some(keyword)) => Some(CSSWideKeyword(keyword)),
-                    Some(None) => Some(CSSWideKeyword(${
-                        "Inherit" if THIS_STYLE_STRUCT.inherited else "Initial"})),
-                    None => parse_specified(input, base_url),
+            % if derived_from is None:
+                pub fn parse_declared(input: &[ComponentValue], base_url: &Url)
+                                   -> Option<DeclaredValue<SpecifiedValue>> {
+                    match CSSWideKeyword::parse(input) {
+                        Some(Some(keyword)) => Some(CSSWideKeyword(keyword)),
+                        Some(None) => Some(CSSWideKeyword(${
+                            "Inherit" if THIS_STYLE_STRUCT.inherited else "Initial"})),
+                        None => parse_specified(input, base_url),
+                    }
                 }
-            }
+            % endif
         }
     </%def>
 
-    <%def name="longhand(name, no_super=False)">
-        <%self:raw_longhand name="${name}">
+    <%def name="longhand(name, no_super=False, derived_from=None)">
+        <%self:raw_longhand name="${name}" derived_from="${derived_from}">
             ${caller.body()}
-            pub fn parse_specified(input: &[ComponentValue], base_url: &Url)
-                               -> Option<DeclaredValue<SpecifiedValue>> {
-                parse(input, base_url).map(super::SpecifiedValue)
-            }
+            % if derived_from is None:
+                pub fn parse_specified(_input: &[ComponentValue], _base_url: &Url)
+                                   -> Option<DeclaredValue<SpecifiedValue>> {
+                    parse(_input, _base_url).map(super::SpecifiedValue)
+                }
+            % endif
         </%self:raw_longhand>
     </%def>
 
-    <%def name="single_component_value(name)">
-        <%self:longhand name="${name}">
+    <%def name="single_component_value(name, derived_from=None)">
+        <%self:longhand name="${name}" derived_from="${derived_from}">
             ${caller.body()}
             pub fn parse(input: &[ComponentValue], base_url: &Url) -> Option<SpecifiedValue> {
                 one_component_value(input).and_then(|c| from_component_value(c, base_url))
@@ -128,6 +153,7 @@ pub mod longhands {
         <%self:single_component_value name="${name}">
             ${caller.body()}
             pub mod computed_value {
+                #[allow(non_camel_case_types)]
                 #[deriving(Eq, Clone, FromPrimitive)]
                 pub enum T {
                     % for value in values.split():
@@ -200,8 +226,7 @@ pub mod longhands {
         ${predefined_type("border-%s-color" % side, "CSSColor", "CurrentColor")}
     % endfor
 
-    //  double groove ridge insed outset
-    ${single_keyword("border-top-style", values="none solid dotted dashed hidden")}
+    ${single_keyword("border-top-style", values="none solid double dotted dashed hidden groove ridge inset outset")}
 
     % for side in ["right", "bottom", "left"]:
         <%self:longhand name="border-${side}-style", no_super="True">
@@ -217,9 +242,7 @@ pub mod longhands {
                               -> Option<specified::Length> {
         match component_value {
             &Ident(ref value) => {
-                // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-                let value_lower = value.to_ascii_lower();
-                match value_lower.as_slice() {
+                match value.to_owned().to_ascii_lower().as_slice() {
                     "thin" => Some(specified::Length::from_px(1.)),
                     "medium" => Some(specified::Length::from_px(3.)),
                     "thick" => Some(specified::Length::from_px(5.)),
@@ -280,11 +303,11 @@ pub mod longhands {
 //            }
             if context.positioned || context.floated || context.is_root_element {
                 match value {
-//                    inline_table => table,
+                    inline_table => table,
                     inline | inline_block
-//                    | table_row_group | table_column | table_column_group
-//                    | table_header_group | table_footer_group | table_row
-//                    | table_cell | table_caption
+                    | table_row_group | table_column | table_column_group
+                    | table_header_group | table_footer_group | table_row
+                    | table_cell | table_caption
                     => block,
                     _ => value,
                 }
@@ -303,14 +326,41 @@ pub mod longhands {
     ${predefined_type("width", "LengthOrPercentageOrAuto",
                       "computed::LPA_Auto",
                       "parse_non_negative")}
-    ${predefined_type("height", "LengthOrPercentageOrAuto",
-                      "computed::LPA_Auto",
-                      "parse_non_negative")}
+    <%self:single_component_value name="height">
+        pub type SpecifiedValue = specified::LengthOrPercentageOrAuto;
+        pub mod computed_value {
+            pub type T = super::super::computed::LengthOrPercentageOrAuto;
+        }
+        #[inline]
+        pub fn get_initial_value() -> computed_value::T { computed::LPA_Auto }
+        #[inline]
+        pub fn from_component_value(v: &ComponentValue, _base_url: &Url)
+                                              -> Option<SpecifiedValue> {
+            specified::LengthOrPercentageOrAuto::parse_non_negative(v)
+        }
+        pub fn to_computed_value(value: SpecifiedValue, context: &computed::Context)
+                              -> computed_value::T {
+            match (value, context.inherited_height) {
+                (specified::LPA_Percentage(_), computed::LPA_Auto)
+                if !context.is_root_element && !context.positioned => {
+                    computed::LPA_Auto
+                },
+                _ => computed::compute_LengthOrPercentageOrAuto(value, context)
+            }
+        }
+    </%self:single_component_value>
 
     ${predefined_type("min-width", "LengthOrPercentage",
                       "computed::LP_Length(Au(0))",
                       "parse_non_negative")}
     ${predefined_type("max-width", "LengthOrPercentageOrNone",
+                      "computed::LPN_None",
+                      "parse_non_negative")}
+
+    ${predefined_type("min-height", "LengthOrPercentage",
+                      "computed::LP_Length(Au(0))",
+                      "parse_non_negative")}
+    ${predefined_type("max-height", "LengthOrPercentageOrNone",
                       "computed::LPN_None",
                       "parse_non_negative")}
 
@@ -335,7 +385,7 @@ pub mod longhands {
                 &Dimension(ref value, ref unit) if value.value >= 0.
                 => specified::Length::parse_dimension(value.value, unit.as_slice())
                     .map(SpecifiedLength),
-                &Ident(ref value) if value.eq_ignore_ascii_case("normal")
+                &Ident(ref value) if value.to_owned().eq_ignore_ascii_case("normal")
                 => Some(SpecifiedNormal),
                 _ => None,
             }
@@ -362,11 +412,47 @@ pub mod longhands {
         }
     </%self:single_component_value>
 
+    <%self:longhand name="-servo-minimum-line-height" derived_from="line-height">
+        use super::Au;
+        use super::super::common_types::DEFAULT_LINE_HEIGHT;
+        use super::super::longhands::display;
+        use super::super::longhands::line_height;
+
+        pub use to_computed_value = super::computed_as_specified;
+
+        pub type SpecifiedValue = line_height::SpecifiedValue;
+
+        pub mod computed_value {
+            pub type T = super::super::Au;
+        }
+
+        #[inline]
+        pub fn get_initial_value() -> computed_value::T {
+            Au(0)
+        }
+
+        #[inline]
+        pub fn derive_from_line_height(value: line_height::computed_value::T,
+                                       context: &computed::Context)
+                                       -> Au {
+            if context.display != display::computed_value::inline {
+                match value {
+                    line_height::Normal => context.font_size.scale_by(DEFAULT_LINE_HEIGHT),
+                    line_height::Number(percentage) => context.font_size.scale_by(percentage),
+                    line_height::Length(length) => length,
+                }
+            } else {
+                context.inherited_minimum_line_height
+            }
+        }
+    </%self:longhand>
+
     ${switch_to_style_struct("Box")}
 
     <%self:single_component_value name="vertical-align">
         <% vertical_align_keywords = (
             "baseline sub super top text-top middle bottom text-bottom".split()) %>
+        #[allow(non_camel_case_types)]
         #[deriving(Clone)]
         pub enum SpecifiedValue {
             % for keyword in vertical_align_keywords:
@@ -380,9 +466,7 @@ pub mod longhands {
                                     -> Option<SpecifiedValue> {
             match input {
                 &Ident(ref value) => {
-                    // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-                    let value_lower = value.to_ascii_lower();
-                    match value_lower.as_slice() {
+                    match value.to_owned().to_ascii_lower().as_slice() {
                         % for keyword in vertical_align_keywords:
                         "${keyword}" => Some(Specified_${to_rust_ident(keyword)}),
                         % endfor
@@ -395,6 +479,7 @@ pub mod longhands {
         }
         pub mod computed_value {
             use super::super::{Au, CSSFloat};
+            #[allow(non_camel_case_types)]
             #[deriving(Eq, Clone)]
             pub enum T {
                 % for keyword in vertical_align_keywords:
@@ -442,11 +527,12 @@ pub mod longhands {
                 pub enum Content {
                     StringContent(~str),
                 }
+                #[allow(non_camel_case_types)]
                 #[deriving(Eq, Clone)]
                 pub enum T {
                     normal,
                     none,
-                    Content(~[Content]),
+                    Content(Vec<Content>),
                 }
             }
             pub type SpecifiedValue = computed_value::T;
@@ -456,14 +542,16 @@ pub mod longhands {
             // TODO: <uri>, <counter>, attr(<identifier>), open-quote, close-quote, no-open-quote, no-close-quote
             pub fn parse(input: &[ComponentValue], _base_url: &Url) -> Option<SpecifiedValue> {
                 match one_component_value(input) {
-                    Some(&Ident(ref keyword)) => match keyword.to_ascii_lower().as_slice() {
-                        "normal" => return Some(normal),
-                        "none" => return Some(none),
-                        _ => ()
+                    Some(&Ident(ref keyword)) => {
+                        match keyword.to_owned().to_ascii_lower().as_slice() {
+                            "normal" => return Some(normal),
+                            "none" => return Some(none),
+                            _ => ()
+                        }
                     },
                     _ => ()
                 }
-                let mut content = ~[];
+                let mut content = vec!();
                 for component_value in input.skip_whitespace() {
                     match component_value {
                         &String(ref value)
@@ -486,7 +574,7 @@ pub mod longhands {
             // The computed value is the same as the specified value.
             pub use to_computed_value = super::computed_as_specified;
             pub mod computed_value {
-                pub use extra::url::Url;
+                pub use url::Url;
                 pub type T = Option<Url>;
             }
             pub type SpecifiedValue = computed_value::T;
@@ -499,11 +587,87 @@ pub mod longhands {
                         let image_url = parse_url(url.as_slice(), Some(base_url.clone()));
                         Some(Some(image_url))
                     },
+                    &ast::Ident(ref value) if value.to_owned().eq_ignore_ascii_case("none") => Some(None),
                     _ => None,
                 }
             }
     </%self:single_component_value>
 
+    <%self:longhand name="background-position">
+            use super::super::common_types::specified;
+
+            pub mod computed_value {
+                use super::super::super::common_types::computed::LengthOrPercentage;
+
+                #[deriving(Eq, Clone)]
+                pub struct T {
+                    pub horizontal: LengthOrPercentage,
+                    pub vertical: LengthOrPercentage,
+                }
+            }
+
+            #[deriving(Clone)]
+            pub struct SpecifiedValue {
+                pub horizontal: specified::LengthOrPercentage,
+                pub vertical: specified::LengthOrPercentage,
+            }
+
+            #[inline]
+            pub fn to_computed_value(value: SpecifiedValue, context: &computed::Context)
+                                     -> computed_value::T {
+                computed_value::T {
+                    horizontal: computed::compute_LengthOrPercentage(value.horizontal, context),
+                    vertical: computed::compute_LengthOrPercentage(value.vertical, context),
+                }
+            }
+
+            #[inline]
+            pub fn get_initial_value() -> computed_value::T {
+                computed_value::T {
+                    horizontal: computed::LP_Percentage(0.0),
+                    vertical: computed::LP_Percentage(0.0),
+                }
+            }
+
+            // FIXME(#1997, pcwalton): Support complete CSS2 syntax.
+            pub fn parse_horizontal_and_vertical(horiz: &ComponentValue, vert: &ComponentValue)
+                                                 -> Option<SpecifiedValue> {
+                let horiz = match specified::LengthOrPercentage::parse_non_negative(horiz) {
+                    None => return None,
+                    Some(value) => value,
+                };
+
+                let vert = match specified::LengthOrPercentage::parse_non_negative(vert) {
+                    None => return None,
+                    Some(value) => value,
+                };
+
+                Some(SpecifiedValue {
+                    horizontal: horiz,
+                    vertical: vert,
+                })
+            }
+
+            pub fn parse(input: &[ComponentValue], _: &Url) -> Option<SpecifiedValue> {
+                let mut input_iter = input.skip_whitespace();
+                let horizontal = input_iter.next();
+                let vertical = input_iter.next();
+                if input_iter.next().is_some() {
+                    return None
+                }
+
+                match (horizontal, vertical) {
+                    (Some(horizontal), Some(vertical)) => {
+                        parse_horizontal_and_vertical(horizontal, vertical)
+                    }
+                    _ => None
+                }
+            }
+    </%self:longhand>
+
+    ${single_keyword("background-repeat", "repeat repeat-x repeat-y no-repeat")}
+
+    ${single_keyword("background-attachment", "scroll fixed")}
 
     ${new_style_struct("Color", is_inherited=True)}
 
@@ -543,10 +707,10 @@ pub mod longhands {
 //                Fantasy,
 //                Monospace,
             }
-            pub type T = ~[FontFamily];
+            pub type T = Vec<FontFamily>;
         }
         pub type SpecifiedValue = computed_value::T;
-        #[inline] pub fn get_initial_value() -> computed_value::T { ~[FamilyName(~"serif")] }
+        #[inline] pub fn get_initial_value() -> computed_value::T { vec!(FamilyName("serif".to_owned())) }
         /// <familiy-name>#
         /// <familiy-name> = <string> | [ <ident>+ ]
         /// TODO: <generic-familiy>
@@ -554,14 +718,14 @@ pub mod longhands {
             from_iter(input.skip_whitespace())
         }
         pub fn from_iter<'a>(mut iter: SkipWhitespaceIterator<'a>) -> Option<SpecifiedValue> {
-            let mut result = ~[];
+            let mut result = vec!();
             macro_rules! add(
-                ($value: expr) => {
+                ($value: expr, $b: expr) => {
                     {
                         result.push($value);
                         match iter.next() {
                             Some(&Comma) => (),
-                            None => break 'outer,
+                            None => $b,
                             _ => return None,
                         }
                     }
@@ -570,19 +734,16 @@ pub mod longhands {
             'outer: loop {
                 match iter.next() {
                     // TODO: avoid copying strings?
-                    Some(&String(ref value)) => add!(FamilyName(value.to_owned())),
+                    Some(&String(ref value)) => add!(FamilyName(value.to_owned()), break 'outer),
                     Some(&Ident(ref value)) => {
-                        // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-                        let value = value.as_slice();
-                        let value_lower = value.to_ascii_lower();
-                        match value_lower.as_slice() {
-//                            "serif" => add!(Serif),
-//                            "sans-serif" => add!(SansSerif),
-//                            "cursive" => add!(Cursive),
-//                            "fantasy" => add!(Fantasy),
-//                            "monospace" => add!(Monospace),
+                        match value.to_owned().to_ascii_lower().as_slice() {
+//                            "serif" => add!(Serif, break 'outer),
+//                            "sans-serif" => add!(SansSerif, break 'outer),
+//                            "cursive" => add!(Cursive, break 'outer),
+//                            "fantasy" => add!(Fantasy, break 'outer),
+//                            "monospace" => add!(Monospace, break 'outer),
                             _ => {
-                                let mut idents = ~[value];
+                                let mut idents = vec!(value.as_slice());
                                 loop {
                                     match iter.next() {
                                         Some(&Ident(ref value)) => idents.push(value.as_slice()),
@@ -625,9 +786,7 @@ pub mod longhands {
                                     -> Option<SpecifiedValue> {
             match input {
                 &Ident(ref value) => {
-                    // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-                    let value_lower = value.to_ascii_lower();
-                    match value_lower.as_slice() {
+                    match value.to_owned().to_ascii_lower().as_slice() {
                         "bold" => Some(SpecifiedWeight700),
                         "normal" => Some(SpecifiedWeight400),
                         "bolder" => Some(Bolder),
@@ -742,9 +901,9 @@ pub mod longhands {
         pub use to_computed_value = super::computed_as_specified;
         #[deriving(Eq, Clone)]
         pub struct SpecifiedValue {
-            underline: bool,
-            overline: bool,
-            line_through: bool,
+            pub underline: bool,
+            pub overline: bool,
+            pub line_through: bool,
             // 'blink' is accepted in the parser but ignored.
             // Just not blinking the text is a conforming implementation per CSS 2.1.
         }
@@ -785,9 +944,88 @@ pub mod longhands {
 
     ${switch_to_style_struct("InheritedText")}
 
+    <%self:longhand name="-servo-text-decorations-in-effect"
+                    derived_from="display text-decoration">
+        use super::RGBA;
+        use super::super::longhands::display;
+
+        pub use to_computed_value = super::computed_as_specified;
+
+        #[deriving(Clone, Eq)]
+        pub struct SpecifiedValue {
+            pub underline: Option<RGBA>,
+            pub overline: Option<RGBA>,
+            pub line_through: Option<RGBA>,
+        }
+
+        pub mod computed_value {
+            pub type T = super::SpecifiedValue;
+        }
+
+        #[inline]
+        pub fn get_initial_value() -> computed_value::T {
+            SpecifiedValue {
+                underline: None,
+                overline: None,
+                line_through: None,
+            }
+        }
+
+        fn maybe(flag: bool, context: &computed::Context) -> Option<RGBA> {
+            if flag {
+                Some(context.color)
+            } else {
+                None
+            }
+        }
+
+        fn derive(context: &computed::Context) -> computed_value::T {
+            // Start with no declarations if this is a block; otherwise, start with the
+            // declarations in effect and add in the text decorations that this inline specifies.
+            let mut result = match context.display {
+                display::computed_value::inline => context.inherited_text_decorations_in_effect,
+                _ => {
+                    SpecifiedValue {
+                        underline: None,
+                        overline: None,
+                        line_through: None,
+                    }
+                }
+            };
+
+            if result.underline.is_none() {
+                result.underline = maybe(context.text_decoration.underline, context)
+            }
+            if result.overline.is_none() {
+                result.overline = maybe(context.text_decoration.overline, context)
+            }
+            if result.line_through.is_none() {
+                result.line_through = maybe(context.text_decoration.line_through, context)
+            }
+
+            result
+        }
+
+        #[inline]
+        pub fn derive_from_text_decoration(_: text_decoration::computed_value::T,
+                                           context: &computed::Context)
+                                           -> computed_value::T {
+            derive(context)
+        }
+
+        #[inline]
+        pub fn derive_from_display(_: display::computed_value::T, context: &computed::Context)
+                                   -> computed_value::T {
+            derive(context)
+        }
+    </%self:longhand>
+
     ${single_keyword("white-space", "normal pre")}
 
     // CSS 2.1, Section 17 - Tables
+    ${new_style_struct("Table", is_inherited=False)}
+
+    ${single_keyword("table-layout", "auto fixed")}
 
     // CSS 2.1, Section 18 - User interface
 }
@@ -804,9 +1042,9 @@ pub mod shorthands {
     %>
         pub mod ${shorthand.ident} {
             use super::*;
-            struct Longhands {
+            pub struct Longhands {
                 % for sub_property in shorthand.sub_properties:
-                    ${sub_property.ident}: Option<${sub_property.ident}::SpecifiedValue>,
+                    pub ${sub_property.ident}: Option<${sub_property.ident}::SpecifiedValue>,
                 % endfor
             }
             pub fn parse(input: &[ComponentValue], base_url: &Url) -> Option<Longhands> {
@@ -843,29 +1081,97 @@ pub mod shorthands {
     </%def>
 
     // TODO: other background-* properties
-    <%self:shorthand name="background" sub_properties="background-color background-image">
-                let mut color = None;
-                let mut image = None;
+    <%self:shorthand name="background"
+                     sub_properties="background-color background-position background-repeat background-attachment background-image">
+                use std::mem;
+
+                let (mut color, mut image, mut position, mut repeat, mut attachment) =
+                    (None, None, None, None, None);
+                let mut last_component_value = None;
                 let mut any = false;
 
                 for component_value in input.skip_whitespace() {
                     if color.is_none() {
                         match background_color::from_component_value(component_value, base_url) {
-                            Some(v) => { color = Some(v); any = true; continue },
+                            Some(v) => {
+                                color = Some(v);
+                                any = true;
+                                continue
+                            },
                             None => ()
                         }
                     }
 
                     if image.is_none() {
                         match background_image::from_component_value(component_value, base_url) {
-                            Some(v) => { image = Some(v); any = true; continue },
+                            Some(v) => {
+                                image = Some(v);
+                                any = true;
+                                continue
+                            },
                             None => (),
                         }
                     }
-                    return None;
+
+                    if repeat.is_none() {
+                        match background_repeat::from_component_value(component_value, base_url) {
+                            Some(v) => {
+                                repeat = Some(v);
+                                any = true;
+                                continue
+                            },
+                            None => ()
+                        }
+                    }
+
+                    if attachment.is_none() {
+                        match background_attachment::from_component_value(component_value,
+                                                                          base_url) {
+                            Some(v) => {
+                                attachment = Some(v);
+                                any = true;
+                                continue
+                            },
+                            None => ()
+                        }
+                    }
+
+                    match mem::replace(&mut last_component_value, None) {
+                        Some(saved_component_value) => {
+                            if position.is_none() {
+                                match background_position::parse_horizontal_and_vertical(
+                                        saved_component_value,
+                                        component_value) {
+                                    Some(v) => {
+                                        position = Some(v);
+                                        any = true;
+                                        continue
+                                    },
+                                    None => (),
+                                }
+                            }
+
+                            // If we get here, parsing failed.
+                            return None
+                        }
+                        None => {
+                            // Save the component value.
+                            last_component_value = Some(component_value)
+                        }
+                    }
                 }
-                if any { Some(Longhands { background_color: color, background_image: image }) }
-                else { None }
+
+                if any && last_component_value.is_none() {
+                    Some(Longhands {
+                        background_color: color,
+                        background_image: image,
+                        background_position: position,
+                        background_repeat: repeat,
+                        background_attachment: attachment,
+                    })
+                } else {
+                    None
+                }
     </%self:shorthand>
 
     ${four_sides_shorthand("margin", "margin-%s", "margin_top::from_component_value")}
@@ -956,10 +1262,12 @@ pub mod shorthands {
             // Special-case 'normal' because it is valid in each of
             // font-style, font-weight and font-variant.
             // Leaves the values to None, 'normal' is the initial value for each of them.
-            if get_ident_lower(component_value).filtered(
-                    |v| v.eq_ignore_ascii_case("normal")).is_some() {
-                nb_normals += 1;
-                continue;
+            match get_ident_lower(component_value) {
+                Some(ref ident) if ident.to_owned().eq_ignore_ascii_case("normal") => {
+                    nb_normals += 1;
+                    continue;
+                }
+                _ => {}
             }
             if style.is_none() {
                 match font_style::from_component_value(component_value, base_url) {
@@ -1021,13 +1329,62 @@ pub mod shorthands {
 }
 
 
-pub struct PropertyDeclarationBlock {
-    important: Arc<~[PropertyDeclaration]>,
-    normal: Arc<~[PropertyDeclaration]>,
+// TODO(SimonSapin): Convert this to a syntax extension rather than a Mako template.
+// Maybe submit for inclusion in libstd?
+mod property_bit_field {
+    use std::uint;
+    use std::mem;
+
+    pub struct PropertyBitField {
+        storage: [uint, ..(${len(LONGHANDS)} - 1 + uint::BITS) / uint::BITS]
+    }
+
+    impl PropertyBitField {
+        #[inline]
+        pub fn new() -> PropertyBitField {
+            PropertyBitField { storage: unsafe { mem::init() } }
+        }
+
+        #[inline]
+        fn get(&self, bit: uint) -> bool {
+            (self.storage[bit / uint::BITS] & (1 << (bit % uint::BITS))) != 0
+        }
+        #[inline]
+        fn set(&mut self, bit: uint) {
+            self.storage[bit / uint::BITS] |= 1 << (bit % uint::BITS)
+        }
+        #[inline]
+        fn clear(&mut self, bit: uint) {
+            self.storage[bit / uint::BITS] &= !(1 << (bit % uint::BITS))
+        }
+        % for i, property in enumerate(LONGHANDS):
+            #[inline]
+            pub fn get_${property.ident}(&self) -> bool {
+                self.get(${i})
+            }
+            #[inline]
+            pub fn set_${property.ident}(&mut self) {
+                self.set(${i})
+            }
+            #[inline]
+            pub fn clear_${property.ident}(&mut self) {
+                self.clear(${i})
+            }
+        % endfor
+    }
 }
 
-impl<S: Encoder> Encodable<S> for PropertyDeclarationBlock {
-    fn encode(&self, _: &mut S) {
+
+/// Declarations are stored in reverse order.
+/// Overridden declarations are skipped.
+pub struct PropertyDeclarationBlock {
+    pub important: Arc<Vec<PropertyDeclaration>>,
+    pub normal: Arc<Vec<PropertyDeclaration>>,
+}
+
+impl<E, S: Encoder<E>> Encodable<S, E> for PropertyDeclarationBlock {
+    fn encode(&self, _: &mut S) -> Result<(), E> {
+        Ok(())
     }
 }
 
@@ -1038,28 +1395,36 @@ pub fn parse_style_attribute(input: &str, base_url: &Url) -> PropertyDeclaration
 
 
 pub fn parse_property_declaration_list<I: Iterator<Node>>(input: I, base_url: &Url) -> PropertyDeclarationBlock {
-    let mut important = ~[];
-    let mut normal = ~[];
-    for item in ErrorLoggerIterator(parse_declaration_list(input)) {
+    let mut important_declarations = vec!();
+    let mut normal_declarations = vec!();
+    let mut important_seen = PropertyBitField::new();
+    let mut normal_seen = PropertyBitField::new();
+    let items: Vec<DeclarationListItem> =
+        ErrorLoggerIterator(parse_declaration_list(input)).collect();
+    for item in items.move_iter().rev() {
         match item {
-            Decl_AtRule(rule) => log_css_error(
+            DeclAtRule(rule) => log_css_error(
                 rule.location, format!("Unsupported at-rule in declaration list: @{:s}", rule.name)),
             Declaration(Declaration{ location: l, name: n, value: v, important: i}) => {
                 // TODO: only keep the last valid declaration for a given name.
-                let list = if i { &mut important } else { &mut normal };
-                match PropertyDeclaration::parse(n, v, list, base_url) {
+                let (list, seen) = if i {
+                    (&mut important_declarations, &mut important_seen)
+                } else {
+                    (&mut normal_declarations, &mut normal_seen)
+                };
+                match PropertyDeclaration::parse(n.to_owned(), v.as_slice(), list, base_url, seen) {
                     UnknownProperty => log_css_error(l, format!(
                         "Unsupported property: {}:{}", n, v.iter().to_css())),
                     InvalidValue => log_css_error(l, format!(
                         "Invalid value: {}:{}", n, v.iter().to_css())),
-                    ValidDeclaration => (),
+                    ValidOrIgnoredDeclaration => (),
                 }
             }
         }
     }
     PropertyDeclarationBlock {
-        important: Arc::new(important),
-        normal: Arc::new(normal),
+        important: Arc::new(important_declarations),
+        normal: Arc::new(normal_declarations),
     }
 }
 
@@ -1093,68 +1458,97 @@ pub enum DeclaredValue<T> {
 #[deriving(Clone)]
 pub enum PropertyDeclaration {
     % for property in LONGHANDS:
-        ${property.ident}_declaration(DeclaredValue<longhands::${property.ident}::SpecifiedValue>),
+        ${property.camel_case}Declaration(DeclaredValue<longhands::${property.ident}::SpecifiedValue>),
     % endfor
 }
 
 
-enum PropertyDeclarationParseResult {
+pub enum PropertyDeclarationParseResult {
     UnknownProperty,
     InvalidValue,
-    ValidDeclaration,
+    ValidOrIgnoredDeclaration,
 }
 
 
 impl PropertyDeclaration {
     pub fn parse(name: &str, value: &[ComponentValue],
-                 result_list: &mut ~[PropertyDeclaration],
-                 base_url: &Url) -> PropertyDeclarationParseResult {
+                 result_list: &mut Vec<PropertyDeclaration>,
+                 base_url: &Url,
+                 seen: &mut PropertyBitField) -> PropertyDeclarationParseResult {
         // FIXME: local variable to work around Rust #10683
-        let name_lower = name.to_ascii_lower();
+        let name_lower = name.to_owned().to_ascii_lower();
         match name_lower.as_slice() {
             % for property in LONGHANDS:
-                "${property.name}" => result_list.push(${property.ident}_declaration(
-                    match longhands::${property.ident}::parse_declared(value, base_url) {
-                        Some(value) => value,
-                        None => return InvalidValue,
-                    }
-                )),
+                % if property.derived_from is None:
+                    "${property.name}" => {
+                        if seen.get_${property.ident}() {
+                            return ValidOrIgnoredDeclaration
+                        }
+                        match longhands::${property.ident}::parse_declared(value, base_url) {
+                            Some(value) => {
+                                seen.set_${property.ident}();
+                                result_list.push(${property.camel_case}Declaration(value));
+                                ValidOrIgnoredDeclaration
+                            },
+                            None => InvalidValue,
+                        }
+                    },
+                % else:
+                    "${property.name}" => UnknownProperty,
+                % endif
             % endfor
             % for shorthand in SHORTHANDS:
-                "${shorthand.name}" => match CSSWideKeyword::parse(value) {
-                    Some(Some(keyword)) => {
-                        % for sub_property in shorthand.sub_properties:
-                            result_list.push(${sub_property.ident}_declaration(
-                                CSSWideKeyword(keyword)
-                            ));
-                        % endfor
-                    },
-                    Some(None) => {
-                        % for sub_property in shorthand.sub_properties:
-                            result_list.push(${sub_property.ident}_declaration(
-                                CSSWideKeyword(${
-                                    "Inherit" if sub_property.style_struct.inherited else "Initial"})
-                            ));
-                        % endfor
-                    },
-                    None => match shorthands::${shorthand.ident}::parse(value, base_url) {
-                        Some(result) => {
+                "${shorthand.name}" => {
+                    if ${" && ".join("seen.get_%s()" % sub_property.ident
+                                     for sub_property in shorthand.sub_properties)} {
+                        return ValidOrIgnoredDeclaration
+                    }
+                    match CSSWideKeyword::parse(value) {
+                        Some(Some(keyword)) => {
                             % for sub_property in shorthand.sub_properties:
-                                result_list.push(${sub_property.ident}_declaration(
-                                    match result.${sub_property.ident} {
-                                        Some(value) => SpecifiedValue(value),
-                                        None => CSSWideKeyword(Initial),
-                                    }
-                                ));
+                                if !seen.get_${sub_property.ident}() {
+                                    seen.set_${sub_property.ident}();
+                                    result_list.push(${sub_property.camel_case}Declaration(
+                                        CSSWideKeyword(keyword)));
+                                }
                             % endfor
+                            ValidOrIgnoredDeclaration
                         },
-                        None => return InvalidValue,
+                        Some(None) => {
+                            % for sub_property in shorthand.sub_properties:
+                                if !seen.get_${sub_property.ident}() {
+                                    seen.set_${sub_property.ident}();
+                                    result_list.push(${sub_property.camel_case}Declaration(
+                                        CSSWideKeyword(
+                                            ${"Inherit" if sub_property.style_struct.inherited else "Initial"}
+                                        )
+                                    ));
+                                }
+                            % endfor
+                            ValidOrIgnoredDeclaration
+                        },
+                        None => match shorthands::${shorthand.ident}::parse(value, base_url) {
+                            Some(result) => {
+                                % for sub_property in shorthand.sub_properties:
+                                    if !seen.get_${sub_property.ident}() {
+                                        seen.set_${sub_property.ident}();
+                                        result_list.push(${sub_property.camel_case}Declaration(
+                                            match result.${sub_property.ident} {
+                                                Some(value) => SpecifiedValue(value),
+                                                None => CSSWideKeyword(Initial),
+                                            }
+                                        ));
+                                    }
+                                % endfor
+                                ValidOrIgnoredDeclaration
+                            },
+                            None => InvalidValue,
+                        }
                     }
                 },
             % endfor
-            _ => return UnknownProperty,
+            _ => UnknownProperty,
         }
-        ValidDeclaration
     }
 }
 
@@ -1165,16 +1559,16 @@ pub mod style_structs {
         #[deriving(Eq, Clone)]
         pub struct ${style_struct.name} {
             % for longhand in style_struct.longhands:
-                ${longhand.ident}: longhands::${longhand.ident}::computed_value::T,
+                pub ${longhand.ident}: longhands::${longhand.ident}::computed_value::T,
             % endfor
         }
     % endfor
 }
 
-#[deriving(Eq, Clone)]
+#[deriving(Clone)]
 pub struct ComputedValues {
     % for style_struct in STYLE_STRUCTS:
-        ${style_struct.name}: CowArc<style_structs::${style_struct.name}>,
+        ${style_struct.ident}: Arc<style_structs::${style_struct.name}>,
     % endfor
     shareable: bool,
 }
@@ -1190,22 +1584,43 @@ impl ComputedValues {
     pub fn resolve_color(&self, color: computed::CSSColor) -> RGBA {
         match color {
             RGBA(rgba) => rgba,
-            CurrentColor => self.Color.get().color,
+            CurrentColor => self.get_color().color,
         }
     }
+
+    % for style_struct in STYLE_STRUCTS:
+        pub fn get_${style_struct.name.lower()}
+                <'a>(&'a self) -> &'a style_structs::${style_struct.name} {
+            &*self.${style_struct.ident}
+        }
+    % endfor
 }
 
-/// Returns the initial values for all style structs as defined by the specification.
-pub fn initial_values() -> ComputedValues {
-    ComputedValues {
+/// The initial values for all style structs as defined by the specification.
+lazy_init! {
+    static ref INITIAL_VALUES: ComputedValues = ComputedValues {
         % for style_struct in STYLE_STRUCTS:
-            ${style_struct.name}: CowArc::new(style_structs::${style_struct.name} {
+            ${style_struct.ident}: Arc::new(style_structs::${style_struct.name} {
                 % for longhand in style_struct.longhands:
                     ${longhand.ident}: longhands::${longhand.ident}::get_initial_value(),
                 % endfor
             }),
         % endfor
         shareable: true,
+    };
+}
+
+
+/// This only exists to limit the scope of #[allow(experimental)]
+/// FIXME: remove this when Arc::make_unique() is not experimental anymore.
+trait ArcExperimental<T> {
+    fn make_unique_experimental<'a>(&'a mut self) -> &'a mut T;
+}
+impl<T: Send + Share + Clone> ArcExperimental<T> for Arc<T> {
+    #[inline]
+    #[allow(experimental)]
+    fn make_unique_experimental<'a>(&'a mut self) -> &'a mut T {
+        self.make_unique()
     }
 }
 
@@ -1218,38 +1633,66 @@ fn cascade_with_cached_declarations(applicable_declarations: &[MatchedProperty],
                                     -> ComputedValues {
     % for style_struct in STYLE_STRUCTS:
         % if style_struct.inherited:
-            let mut style_${style_struct.name} = parent_style.${style_struct.name}.clone();
+            let mut style_${style_struct.ident} = parent_style.${style_struct.ident}.clone();
         % else:
-            let style_${style_struct.name} = cached_style.${style_struct.name}.clone();
+            let style_${style_struct.ident} = cached_style.${style_struct.ident}.clone();
         % endif
     % endfor
 
-    for sub_list in applicable_declarations.iter() {
-        for declaration in sub_list.declarations.get().iter() {
+    let mut seen = PropertyBitField::new();
+    // Declaration blocks are stored in increasing precedence order,
+    // we want them in decreasing order here.
+    for sub_list in applicable_declarations.iter().rev() {
+        // Declarations are already stored in reverse order.
+        for declaration in sub_list.declarations.iter() {
             match *declaration {
                 % for style_struct in STYLE_STRUCTS:
                     % if style_struct.inherited:
                         % for property in style_struct.longhands:
-                            ${property.ident}_declaration(ref declared_value) => {
-                                style_${style_struct.name}.get_mut().${property.ident} =
-                                match *declared_value {
-                                    SpecifiedValue(ref specified_value)
-                                    => longhands::${property.ident}::to_computed_value(
-                                        (*specified_value).clone(),
-                                        context
-                                    ),
-                                    CSSWideKeyword(Initial)
-                                    => longhands::${property.ident}::get_initial_value(),
-                                    CSSWideKeyword(Inherit) => {
-                                        // This is a bit slow, but this is rare so it shouldn't matter.
-                                        // FIXME: is it still?
-                                        parent_style.${style_struct.name}
-                                                    .get()
-                                                    .${property.ident}
-                                                    .clone()
+                            % if property.derived_from is None:
+                                ${property.camel_case}Declaration(ref declared_value) => {
+                                    if seen.get_${property.ident}() {
+                                        continue
                                     }
+                                    seen.set_${property.ident}();
+                                    let computed_value = match *declared_value {
+                                        SpecifiedValue(ref specified_value)
+                                        => longhands::${property.ident}::to_computed_value(
+                                            (*specified_value).clone(),
+                                            context
+                                        ),
+                                        CSSWideKeyword(Initial)
+                                        => longhands::${property.ident}::get_initial_value(),
+                                        CSSWideKeyword(Inherit) => {
+                                            // This is a bit slow, but this is rare so it shouldn't
+                                            // matter.
+                                            //
+                                            // FIXME: is it still?
+                                            parent_style.${style_struct.ident}
+                                                        .${property.ident}
+                                                        .clone()
+                                        }
+                                    };
+                                    style_${style_struct.ident}.make_unique_experimental()
+                                        .${property.ident} = computed_value;
+
+                                    % if property.name in DERIVED_LONGHANDS:
+                                        % for derived in DERIVED_LONGHANDS[property.name]:
+                                            style_${derived.style_struct.ident}
+                                                .make_unique_experimental()
+                                                .${derived.ident} =
+                                                longhands::${derived.ident}
+                                                         ::derive_from_${property.ident}(
+                                                             computed_value,
+                                                             context);
+                                        % endfor
+                                    % endif
                                 }
-                            }
+                            % else:
+                                ${property.camel_case}Declaration(_) => {
+                                    // Do not allow stylesheets to set derived properties.
+                                }
+                            % endif
                         % endfor
                     % endif
                 % endfor
@@ -1260,7 +1703,7 @@ fn cascade_with_cached_declarations(applicable_declarations: &[MatchedProperty],
 
     ComputedValues {
         % for style_struct in STYLE_STRUCTS:
-            ${style_struct.name}: style_${style_struct.name},
+            ${style_struct.ident}: style_${style_struct.ident},
         % endfor
         shareable: shareable,
     }
@@ -1276,8 +1719,6 @@ fn cascade_with_cached_declarations(applicable_declarations: &[MatchedProperty],
 ///
 ///   * `parent_style`: The parent style, if applicable; if `None`, this is the root node.
 ///
-///   * `initial_values`: The initial set of CSS values as defined by the specification.
-///
 ///   * `cached_style`: If present, cascading is short-circuited for everything but inherited
 ///     values and these values are used instead. Obviously, you must be careful when supplying
 ///     this that it is safe to only provide inherited declarations. If `parent_style` is `None`,
@@ -1287,23 +1728,30 @@ fn cascade_with_cached_declarations(applicable_declarations: &[MatchedProperty],
 pub fn cascade(applicable_declarations: &[MatchedProperty],
                shareable: bool,
                parent_style: Option< &ComputedValues >,
-               initial_values: &ComputedValues,
                cached_style: Option< &ComputedValues >)
                -> (ComputedValues, bool) {
+    let initial_values = &*INITIAL_VALUES;
     let (is_root_element, inherited_style) = match parent_style {
         Some(parent_style) => (false, parent_style),
         None => (true, initial_values),
     };
 
     let mut context = {
-        let inherited_font_style = inherited_style.Font.get();
+        let inherited_font_style = inherited_style.get_font();
         computed::Context {
             is_root_element: is_root_element,
             inherited_font_weight: inherited_font_style.font_weight,
             inherited_font_size: inherited_font_style.font_size,
+            inherited_height: inherited_style.get_box().height,
+            inherited_minimum_line_height: inherited_style.get_inheritedbox()
+                                                          ._servo_minimum_line_height,
+            inherited_text_decorations_in_effect:
+                inherited_style.get_inheritedtext()._servo_text_decorations_in_effect,
             // To be overridden by applicable declarations:
             font_size: inherited_font_style.font_size,
-            color: inherited_style.Color.get().color,
+            display: longhands::display::get_initial_value(),
+            color: inherited_style.get_color().color,
+            text_decoration: longhands::text_decoration::get_initial_value(),
             positioned: false,
             floated: false,
             border_top_present: false,
@@ -1315,20 +1763,22 @@ pub fn cascade(applicable_declarations: &[MatchedProperty],
 
     // This assumes that the computed and specified values have the same Rust type.
     macro_rules! get_specified(
-        ($style_struct: ident, $property: ident, $declared_value: expr) => {
+        ($style_struct_getter: ident, $property: ident, $declared_value: expr) => {
             match *$declared_value {
                 SpecifiedValue(specified_value) => specified_value,
                 CSSWideKeyword(Initial) => longhands::$property::get_initial_value(),
-                CSSWideKeyword(Inherit) => inherited_style.$style_struct.get().$property.clone(),
+                CSSWideKeyword(Inherit) => inherited_style.$style_struct_getter().$property.clone(),
             }
         };
     )
 
     // Initialize `context`
+    // Declarations blocks are already stored in increasing precedence order.
     for sub_list in applicable_declarations.iter() {
-        for declaration in sub_list.declarations.get().iter() {
+        // Declarations are stored in reverse source order, we want them in forward order here.
+        for declaration in sub_list.declarations.iter().rev() {
             match *declaration {
-                font_size_declaration(ref value) => {
+                FontSizeDeclaration(ref value) => {
                     context.font_size = match *value {
                         SpecifiedValue(specified_value) => computed::compute_Au_with_font_size(
                             specified_value, context.inherited_font_size),
@@ -1336,22 +1786,29 @@ pub fn cascade(applicable_declarations: &[MatchedProperty],
                         CSSWideKeyword(Inherit) => context.inherited_font_size,
                     }
                 }
-                color_declaration(ref value) => {
-                    context.color = get_specified!(Color, color, value);
+                ColorDeclaration(ref value) => {
+                    context.color = get_specified!(get_color, color, value);
                 }
-                position_declaration(ref value) => {
-                    context.positioned = match get_specified!(Box, position, value) {
+                DisplayDeclaration(ref value) => {
+                    context.display = get_specified!(get_box, display, value);
+                }
+                PositionDeclaration(ref value) => {
+                    context.positioned = match get_specified!(get_box, position, value) {
                         longhands::position::absolute | longhands::position::fixed => true,
                         _ => false,
                     }
                 }
-                float_declaration(ref value) => {
-                    context.floated = get_specified!(Box, float, value) != longhands::float::none;
+                FloatDeclaration(ref value) => {
+                    context.floated = get_specified!(get_box, float, value)
+                                      != longhands::float::none;
+                }
+                TextDecorationDeclaration(ref value) => {
+                    context.text_decoration = get_specified!(get_text, text_decoration, value);
                 }
                 % for side in ["top", "right", "bottom", "left"]:
-                    border_${side}_style_declaration(ref value) => {
+                    Border${side.capitalize()}StyleDeclaration(ref value) => {
                         context.border_${side}_present =
-                        match get_specified!(Border, border_${side}_style, value) {
+                        match get_specified!(get_border, border_${side}_style, value) {
                             longhands::border_top_style::none |
                             longhands::border_top_style::hidden => false,
                             _ => true,
@@ -1376,53 +1833,128 @@ pub fn cascade(applicable_declarations: &[MatchedProperty],
 
     // Set computed values, overwriting earlier declarations for the same property.
     % for style_struct in STYLE_STRUCTS:
-        let mut style_${style_struct.name} =
+        let mut style_${style_struct.ident} =
             % if style_struct.inherited:
                 inherited_style
             % else:
                 initial_values
             % endif
-            .${style_struct.name}.clone();
+            .${style_struct.ident}.clone();
     % endfor
     let mut cacheable = true;
-    for sub_list in applicable_declarations.iter() {
-        for declaration in sub_list.declarations.get().iter() {
+    let mut seen = PropertyBitField::new();
+    // Declaration blocks are stored in increasing precedence order,
+    // we want them in decreasing order here.
+    for sub_list in applicable_declarations.iter().rev() {
+        // Declarations are already stored in reverse order.
+        for declaration in sub_list.declarations.iter() {
             match *declaration {
                 % for style_struct in STYLE_STRUCTS:
                     % for property in style_struct.longhands:
-                        ${property.ident}_declaration(ref declared_value) => {
-                            style_${style_struct.name}.get_mut().${property.ident} =
-                            match *declared_value {
-                                SpecifiedValue(ref specified_value)
-                                => longhands::${property.ident}::to_computed_value(
-                                    (*specified_value).clone(),
-                                    &context
-                                ),
-                                CSSWideKeyword(Initial)
-                                => longhands::${property.ident}::get_initial_value(),
-                                CSSWideKeyword(Inherit) => {
-                                    // This is a bit slow, but this is rare so it shouldn't matter.
-                                    // FIXME: is it still?
-                                    cacheable = false;
-                                    inherited_style.${style_struct.name}
-                                                   .get()
-                                                   .${property.ident}
-                                                   .clone()
+                        % if property.derived_from is None:
+                            ${property.camel_case}Declaration(ref declared_value) => {
+                                if seen.get_${property.ident}() {
+                                    continue
                                 }
+                                seen.set_${property.ident}();
+                                let computed_value = match *declared_value {
+                                    SpecifiedValue(ref specified_value)
+                                    => longhands::${property.ident}::to_computed_value(
+                                        (*specified_value).clone(),
+                                        &context
+                                    ),
+                                    CSSWideKeyword(Initial)
+                                    => longhands::${property.ident}::get_initial_value(),
+                                    CSSWideKeyword(Inherit) => {
+                                        // This is a bit slow, but this is rare so it shouldn't
+                                        // matter.
+                                        //
+                                        // FIXME: is it still?
+                                        cacheable = false;
+                                        inherited_style.${style_struct.ident}
+                                                       .${property.ident}
+                                                       .clone()
+                                    }
+                                };
+                                style_${style_struct.ident}.make_unique_experimental()
+                                    .${property.ident} = computed_value;
+
+                                % if property.name in DERIVED_LONGHANDS:
+                                    % for derived in DERIVED_LONGHANDS[property.name]:
+                                        style_${derived.style_struct.ident}
+                                            .make_unique_experimental()
+                                            .${derived.ident} =
+                                            longhands::${derived.ident}
+                                                     ::derive_from_${property.ident}(
+                                                         computed_value,
+                                                         &context);
+                                    % endfor
+                                % endif
                             }
-                        }
+                        % else:
+                            ${property.camel_case}Declaration(_) => {
+                                // Do not allow stylesheets to set derived properties.
+                            }
+                        % endif
                     % endfor
                 % endfor
             }
         }
     }
 
+    // The initial value of border-*-width may be changed at computed value time.
+    {
+        let border = style_border.make_unique_experimental();
+        % for side in ["top", "right", "bottom", "left"]:
+            // Like calling to_computed_value, which wouldn't type check.
+            if !context.border_${side}_present {
+                border.border_${side}_width = Au(0);
+            }
+        % endfor
+    }
+
+    // The initial value of display may be changed at computed value time.
+    if !seen.get_display() {
+        let box_ = style_box_.make_unique_experimental();
+        box_.display = longhands::display::to_computed_value(box_.display, &context);
+    }
+
     (ComputedValues {
         % for style_struct in STYLE_STRUCTS:
-            ${style_struct.name}: style_${style_struct.name},
+            ${style_struct.ident}: style_${style_struct.ident},
         % endfor
         shareable: shareable,
     }, cacheable)
+}
+
+
+/// Equivalent to `cascade()` with an empty `applicable_declarations`
+/// Performs the CSS cascade for an anonymous box.
+///
+///   * `parent_style`: Computed style of the element this anonymous box inherits from.
+pub fn cascade_anonymous(parent_style: &ComputedValues) -> ComputedValues {
+    let initial_values = &*INITIAL_VALUES;
+    let mut result = ComputedValues {
+        % for style_struct in STYLE_STRUCTS:
+            ${style_struct.ident}:
+                % if style_struct.inherited:
+                    parent_style
+                % else:
+                    initial_values
+                % endif
+                .${style_struct.ident}.clone(),
+        % endfor
+        shareable: false,
+    };
+    {
+        let border = result.border.make_unique_experimental();
+        % for side in ["top", "right", "bottom", "left"]:
+            // Like calling to_computed_value, which wouldn't type check.
+            border.border_${side}_width = Au(0);
+        % endfor
+    }
+    // None of the teaks on 'display' apply here.
+    result
 }
 
 

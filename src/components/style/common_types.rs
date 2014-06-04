@@ -2,11 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#![allow(non_camel_case_types)]
+
 pub use servo_util::geometry::Au;
 
 
 pub type CSSFloat = f64;
 
+pub static DEFAULT_LINE_HEIGHT: CSSFloat = 1.14;
 
 pub mod specified {
     use std::ascii::StrAsciiExt;
@@ -52,9 +55,7 @@ pub mod specified {
             Length::parse_internal(input, /* negative_ok = */ false)
         }
         pub fn parse_dimension(value: CSSFloat, unit: &str) -> Option<Length> {
-            // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-            let unit_lower = unit.to_ascii_lower();
-            match unit_lower.as_slice() {
+            match unit.to_ascii_lower().as_slice() {
                 "px" => Some(Length::from_px(value)),
                 "in" => Some(Au_(Au((value * AU_PER_IN) as i32))),
                 "cm" => Some(Au_(Au((value * AU_PER_CM) as i32))),
@@ -125,7 +126,7 @@ pub mod specified {
                 &ast::Percentage(ref value) if negative_ok || value.value >= 0.
                 => Some(LPA_Percentage(value.value / 100.)),
                 &Number(ref value) if value.value == 0. => Some(LPA_Length(Au_(Au(0)))),
-                &Ident(ref value) if value.eq_ignore_ascii_case("auto") => Some(LPA_Auto),
+                &Ident(ref value) if value.to_owned().eq_ignore_ascii_case("auto") => Some(LPA_Auto),
                 _ => None
             }
         }
@@ -154,7 +155,7 @@ pub mod specified {
                 &ast::Percentage(ref value) if negative_ok || value.value >= 0.
                 => Some(LPN_Percentage(value.value / 100.)),
                 &Number(ref value) if value.value == 0. => Some(LPN_Length(Au_(Au(0)))),
-                &Ident(ref value) if value.eq_ignore_ascii_case("none") => Some(LPN_None),
+                &Ident(ref value) if value.to_owned().eq_ignore_ascii_case("none") => Some(LPN_None),
                 _ => None
             }
         }
@@ -179,17 +180,22 @@ pub mod computed {
     pub use std::fmt;
 
     pub struct Context {
-        color: longhands::color::computed_value::T,
-        inherited_font_weight: longhands::font_weight::computed_value::T,
-        inherited_font_size: longhands::font_size::computed_value::T,
-        font_size: longhands::font_size::computed_value::T,
-        positioned: bool,
-        floated: bool,
-        border_top_present: bool,
-        border_right_present: bool,
-        border_bottom_present: bool,
-        border_left_present: bool,
-        is_root_element: bool,
+        pub inherited_font_weight: longhands::font_weight::computed_value::T,
+        pub inherited_font_size: longhands::font_size::computed_value::T,
+        pub inherited_minimum_line_height: longhands::_servo_minimum_line_height::T,
+        pub inherited_text_decorations_in_effect: longhands::_servo_text_decorations_in_effect::T,
+        pub inherited_height: longhands::height::T,
+        pub color: longhands::color::computed_value::T,
+        pub text_decoration: longhands::text_decoration::computed_value::T,
+        pub font_size: longhands::font_size::computed_value::T,
+        pub display: longhands::display::computed_value::T,
+        pub positioned: bool,
+        pub floated: bool,
+        pub border_top_present: bool,
+        pub border_right_present: bool,
+        pub border_bottom_present: bool,
+        pub border_left_present: bool,
+        pub is_root_element: bool,
         // TODO, as needed: root font size, viewport size, etc.
     }
 
@@ -223,9 +229,9 @@ pub mod computed {
             specified::LP_Percentage(value) => LP_Percentage(value),
         }
     }
-    impl fmt::Default for LengthOrPercentage {
-        fn fmt(obj: &LengthOrPercentage, f: &mut fmt::Formatter) {
-            match *obj {
+    impl fmt::Show for LengthOrPercentage {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            match *self {
                 LP_Percentage(percent) => write!(f.buf, "{}%", percent * 100.0),
                 LP_Length(length) => write!(f.buf, "{}", length)
             }
@@ -247,9 +253,9 @@ pub mod computed {
         }
     }
 
-    impl fmt::Default for LengthOrPercentageOrAuto {
-        fn fmt(obj: &LengthOrPercentageOrAuto, f: &mut fmt::Formatter) {
-            match *obj {
+    impl fmt::Show for LengthOrPercentageOrAuto {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            match *self {
                 LPA_Auto => write!(f.buf, "Auto"),
                 LPA_Percentage(percent) => write!(f.buf, "{}%", percent * 100.0),
                 LPA_Length(length) => write!(f.buf, "{}", length)

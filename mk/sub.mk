@@ -7,8 +7,6 @@ SLOW_TESTS += \
 
 # Tests for these submodules do not exist.
 NO_TESTS += \
-	nspr \
-	nss \
 	$(NULL)
 
 # These submodules will not be cleaned by the `make clean-fast` target.
@@ -25,8 +23,6 @@ NATIVE_BUILDS += \
 	libparserutils \
 	mozjs \
 	skia \
-	nss \
-	nspr \
 	glfw \
 	$(NULL)
 
@@ -147,15 +143,12 @@ DEPS_rust-layers += \
 
 endif
 
-DEPS_nss += \
-	nspr \
-	$(NULL)
-
 ifeq ($(CFG_OSTYPE),unknown-linux-gnu)
 
 DEPS_rust-azure += \
 	rust-freetype \
 	rust-fontconfig \
+	fontconfig \
 	rust-xlib \
 	rust \
 	$(NULL)
@@ -166,6 +159,15 @@ DEPS_rust-layers += \
 	rust-fontconfig \
 	rust-xlib \
 	rust \
+	$(NULL)
+
+DEPS_rust-fontconfig += \
+	fontconfig \
+	rust \
+	$(NULL)
+
+NATIVE_BUILD += \
+	fontconfig \
 	$(NULL)
 endif
 

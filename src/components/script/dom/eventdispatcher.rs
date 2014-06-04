@@ -2,58 +2,62 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::callback::eReportExceptions;
+use dom::bindings::callback::ReportExceptions;
 use dom::bindings::codegen::InheritTypes::{EventTargetCast, NodeCast, NodeDerived};
-use dom::bindings::js::JS;
+use dom::bindings::js::{JSRef, OptionalSettable, OptionalRootable, Root};
 use dom::eventtarget::{Capturing, Bubbling, EventTarget};
-use dom::event::{Event, Phase_At_Target, Phase_None, Phase_Bubbling, Phase_Capturing};
+use dom::event::{Event, PhaseAtTarget, PhaseNone, PhaseBubbling, PhaseCapturing, EventMethods};
 use dom::node::{Node, NodeHelpers};
+use dom::virtualmethods::vtable_for;
 
 // See http://dom.spec.whatwg.org/#concept-event-dispatch for the full dispatch algorithm
-pub fn dispatch_event(target: &JS<EventTarget>,
-                      pseudo_target: Option<JS<EventTarget>>,
-                      event: &mut JS<Event>) -> bool {
-    assert!(!event.get().dispatching);
+pub fn dispatch_event<'a, 'b>(target: &JSRef<'a, EventTarget>,
+                              pseudo_target: Option<JSRef<'b, EventTarget>>,
+                              event: &mut JSRef<Event>) -> bool {
+    assert!(!event.deref().dispatching);
 
     {
-        let event = event.get_mut();
-        event.target = match pseudo_target {
-            Some(pseudo_target) => Some(pseudo_target),
-            None => Some(target.clone())
-        };
+        let event = event.deref_mut();
+        event.target.assign(Some(match pseudo_target {
+            Some(pseudo_target) => pseudo_target,
+            None => target.clone(),
+        }));
         event.dispatching = true;
     }
 
-    let type_ = event.get().type_.clone();
-    let mut chain = ~[];
+    let type_ = event.deref().type_.clone();
 
     //TODO: no chain if not participating in a tree
-    if target.get().is_node() {
-        let target_node: JS<Node> = NodeCast::to(target);
-        for ancestor in target_node.ancestors() {
-            let ancestor_target: JS<EventTarget> = EventTargetCast::from(&ancestor);
-            chain.push(ancestor_target);
-        }
-    }
+    let mut chain: Vec<Root<EventTarget>> = if target.deref().is_node() {
+        let target_node: &JSRef<Node> = NodeCast::to_ref(target).unwrap();
+        target_node.ancestors().map(|ancestor| {
+            let ancestor_target: &JSRef<EventTarget> = EventTargetCast::from_ref(&ancestor);
+            ancestor_target.unrooted().root()
+        }).collect()
+    } else {
+        vec!()
+    };
 
-    event.get_mut().phase = Phase_Capturing;
+    event.deref_mut().phase = PhaseCapturing;
 
     //FIXME: The "callback this value" should be currentTarget
 
     /* capturing */
-    for cur_target in chain.rev_iter() {
-        let stopped = match cur_target.get().get_listeners_for(type_, Capturing) {
+    for cur_target in chain.as_slice().iter().rev() {
+        let stopped = match cur_target.get_listeners_for(type_, Capturing) {
             Some(listeners) => {
-                event.get_mut().current_target = Some(cur_target.clone());
+                event.current_target.assign(Some(cur_target.deref().clone()));
                 for listener in listeners.iter() {
-                    listener.HandleEvent__(event, eReportExceptions);
+                    //FIXME: this should have proper error handling, or explicitly
+                    //       drop the exception on the floor
+                    assert!(listener.HandleEvent_(&**cur_target, event, ReportExceptions).is_ok());
 
-                    if event.get().stop_immediate {
+                    if event.deref().stop_immediate {
                         break;
                     }
                 }
 
-                event.get().stop_propagation
+                event.deref().stop_propagation
             }
             None => false
         };
@@ -64,18 +68,20 @@ pub fn dispatch_event(target: &JS<EventTarget>,
     }
 
     /* at target */
-    if !event.get().stop_propagation {
+    if !event.deref().stop_propagation {
         {
-            let event = event.get_mut();
-            event.phase = Phase_At_Target;
-            event.current_target = Some(target.clone());
+            let event = event.deref_mut();
+            event.phase = PhaseAtTarget;
+            event.current_target.assign(Some(target.clone()));
         }
 
-        let opt_listeners = target.get().get_listeners(type_);
+        let opt_listeners = target.deref().get_listeners(type_);
         for listeners in opt_listeners.iter() {
             for listener in listeners.iter() {
-                listener.HandleEvent__(event, eReportExceptions);
-                if event.get().stop_immediate {
+                //FIXME: this should have proper error handling, or explicitly drop the
+                //       exception on the floor.
+                assert!(listener.HandleEvent_(target, event, ReportExceptions).is_ok());
+                if event.deref().stop_immediate {
                     break;
                 }
             }
@@ -83,22 +89,24 @@ pub fn dispatch_event(target: &JS<EventTarget>,
     }
 
     /* bubbling */
-    if event.get().bubbles && !event.get().stop_propagation {
-        event.get_mut().phase = Phase_Bubbling;
+    if event.deref().bubbles && !event.deref().stop_propagation {
+        event.deref_mut().phase = PhaseBubbling;
 
         for cur_target in chain.iter() {
-            let stopped = match cur_target.get().get_listeners_for(type_, Bubbling) {
+            let stopped = match cur_target.deref().get_listeners_for(type_, Bubbling) {
                 Some(listeners) => {
-                    event.get_mut().current_target = Some(cur_target.clone());
+                    event.deref_mut().current_target.assign(Some(cur_target.deref().clone()));
                     for listener in listeners.iter() {
-                        listener.HandleEvent__(event, eReportExceptions);
+                        //FIXME: this should have proper error handling or explicitly
+                        //       drop exceptions on the floor.
+                        assert!(listener.HandleEvent_(&**cur_target, event, ReportExceptions).is_ok());
 
-                        if event.get().stop_immediate {
+                        if event.deref().stop_immediate {
                             break;
                         }
                     }
 
-                    event.get().stop_propagation
+                    event.deref().stop_propagation
                 }
                 None => false
             };
@@ -108,9 +116,30 @@ pub fn dispatch_event(target: &JS<EventTarget>,
         }
     }
 
-    let event = event.get_mut();
+    /* default action */
+    let target = event.GetTarget().root();
+    match target {
+        Some(mut target) => {
+            let node: Option<&mut JSRef<Node>> = NodeCast::to_mut_ref(&mut *target);
+            match node {
+                Some(node) =>{
+                    let vtable = vtable_for(node);
+                    vtable.handle_event(event);
+                }
+                None => {}
+            }
+        }
+        None => {}
+    }
+
+    // Root ordering restrictions mean we need to unroot the chain entries
+    // in the same order they were rooted.
+    while chain.len() > 0 {
+        let _ = chain.pop();
+    }
+
     event.dispatching = false;
-    event.phase = Phase_None;
+    event.phase = PhaseNone;
     event.current_target = None;
 
     !event.DefaultPrevented()

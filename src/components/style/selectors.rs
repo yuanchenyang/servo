@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use std::{vec, iter};
+use std::{cmp, iter};
 use std::ascii::StrAsciiExt;
-use extra::arc::Arc;
+use std::vec;
+use sync::Arc;
 
 use cssparser::ast::*;
 use cssparser::parse_nth;
@@ -18,16 +19,16 @@ use namespaces::NamespaceMap;
 // Only used in tests
 impl Eq for Arc<CompoundSelector> {
     fn eq(&self, other: &Arc<CompoundSelector>) -> bool {
-        self.get() == other.get()
+        **self == **other
     }
 }
 
 
 #[deriving(Eq, Clone)]
 pub struct Selector {
-    compound_selectors: Arc<CompoundSelector>,
-    pseudo_element: Option<PseudoElement>,
-    specificity: u32,
+    pub compound_selectors: Arc<CompoundSelector>,
+    pub pseudo_element: Option<PseudoElement>,
+    pub specificity: u32,
 }
 
 #[deriving(Eq, Clone)]
@@ -41,8 +42,8 @@ pub enum PseudoElement {
 
 #[deriving(Eq, Clone)]
 pub struct CompoundSelector {
-    simple_selectors: ~[SimpleSelector],
-    next: Option<(~CompoundSelector, Combinator)>,  // c.next is left of c
+    pub simple_selectors: Vec<SimpleSelector>,
+    pub next: Option<(Box<CompoundSelector>, Combinator)>,  // c.next is left of c
 }
 
 #[deriving(Eq, Clone)]
@@ -70,7 +71,7 @@ pub enum SimpleSelector {
     AttrSuffixMatch(AttrSelector, ~str),  // [foo$=bar]
 
     // Pseudo-classes
-    Negation(~[SimpleSelector]),
+    Negation(Vec<SimpleSelector>),
     AnyLink,
     Link,
     Visited,
@@ -91,9 +92,9 @@ pub enum SimpleSelector {
 
 #[deriving(Eq, Clone)]
 pub struct AttrSelector {
-    name: ~str,
-    lower_name: ~str,
-    namespace: NamespaceConstraint,
+    pub name: ~str,
+    pub lower_name: ~str,
+    pub namespace: NamespaceConstraint,
 }
 
 #[deriving(Eq, Clone)]
@@ -103,21 +104,21 @@ pub enum NamespaceConstraint {
 }
 
 
-type Iter = iter::Peekable<ComponentValue, vec::MoveIterator<ComponentValue>>;
+type Iter = iter::Peekable<ComponentValue, vec::MoveItems<ComponentValue>>;
 
 
 /// Parse a comma-separated list of Selectors.
 /// aka Selector Group in http://www.w3.org/TR/css3-selectors/#grouping
 ///
 /// Return the Selectors or None if there is an invalid selector.
-pub fn parse_selector_list(input: ~[ComponentValue], namespaces: &NamespaceMap)
-                           -> Option<~[Selector]> {
+pub fn parse_selector_list(input: Vec<ComponentValue>, namespaces: &NamespaceMap)
+                           -> Option<Vec<Selector>> {
     let iter = &mut input.move_iter().peekable();
     let first = match parse_selector(iter, namespaces) {
         None => return None,
         Some(result) => result
     };
-    let mut results = ~[first];
+    let mut results = vec!(first);
 
     loop {
         skip_whitespace(iter);
@@ -168,7 +169,7 @@ fn parse_selector(iter: &mut Iter, namespaces: &NamespaceMap)
             Some((simple_selectors, pseudo)) => {
                 compound = CompoundSelector {
                     simple_selectors: simple_selectors,
-                    next: Some((~compound, combinator))
+                    next: Some((box compound, combinator))
                 };
                 pseudo_element = pseudo;
             }
@@ -196,13 +197,13 @@ fn compute_specificity(mut selector: &CompoundSelector,
     };
     if pseudo_element.is_some() { specificity.element_selectors += 1 }
 
-    simple_selectors_specificity(selector.simple_selectors, &mut specificity);
+    simple_selectors_specificity(selector.simple_selectors.as_slice(), &mut specificity);
     loop {
         match selector.next {
             None => break,
             Some((ref next_selector, _)) => {
                 selector = &**next_selector;
-                simple_selectors_specificity(selector.simple_selectors, &mut specificity)
+                simple_selectors_specificity(selector.simple_selectors.as_slice(), &mut specificity)
             }
         }
     }
@@ -231,9 +232,9 @@ fn compute_specificity(mut selector: &CompoundSelector,
     }
 
     static MAX_10BIT: u32 = (1u32 << 10) - 1;
-    specificity.id_selectors.min(&MAX_10BIT) << 20
-    | specificity.class_like_selectors.min(&MAX_10BIT) << 10
-    | specificity.element_selectors.min(&MAX_10BIT)
+    cmp::min(specificity.id_selectors, MAX_10BIT) << 20
+    | cmp::min(specificity.class_like_selectors, MAX_10BIT) << 10
+    | cmp::min(specificity.element_selectors, MAX_10BIT)
 }
 
 
@@ -243,11 +244,11 @@ fn compute_specificity(mut selector: &CompoundSelector,
 ///
 /// None means invalid selector
 fn parse_simple_selectors(iter: &mut Iter, namespaces: &NamespaceMap)
-                           -> Option<(~[SimpleSelector], Option<PseudoElement>)> {
+                           -> Option<(Vec<SimpleSelector>, Option<PseudoElement>)> {
     let mut empty = true;
     let mut simple_selectors = match parse_type_selector(iter, namespaces) {
         InvalidTypeSelector => return None,
-        NotATypeSelector => ~[],
+        NotATypeSelector => vec!(),
         TypeSelector(s) => { empty = false; s }
     };
 
@@ -268,7 +269,7 @@ fn parse_simple_selectors(iter: &mut Iter, namespaces: &NamespaceMap)
 enum TypeSelectorParseResult {
     InvalidTypeSelector,
     NotATypeSelector,
-    TypeSelector(~[SimpleSelector]),  // Length 0 (*|*), 1 (*|E or ns|*) or 2 (|E or ns|E)
+    TypeSelector(Vec<SimpleSelector>),  // Length 0 (*|*), 1 (*|E or ns|*) or 2 (|E or ns|E)
 }
 
 fn parse_type_selector(iter: &mut Iter, namespaces: &NamespaceMap)
@@ -278,7 +279,7 @@ fn parse_type_selector(iter: &mut Iter, namespaces: &NamespaceMap)
         InvalidQualifiedName => InvalidTypeSelector,
         NotAQualifiedName => NotATypeSelector,
         QualifiedName(namespace, local_name) => {
-            let mut simple_selectors = ~[];
+            let mut simple_selectors = vec!();
             match namespace {
                 SpecificNamespace(ns) => simple_selectors.push(NamespaceSelector(ns)),
                 AnyNamespace => (),
@@ -305,13 +306,13 @@ fn parse_one_simple_selector(iter: &mut Iter, namespaces: &NamespaceMap, inside_
                          -> SimpleSelectorParseResult {
     match iter.peek() {
         Some(&IDHash(_)) => match iter.next() {
-            Some(IDHash(id)) => SimpleSelectorResult(IDSelector(id)),
+            Some(IDHash(id)) => SimpleSelectorResult(IDSelector(id.into_owned())),
             _ => fail!("Implementation error, this should not happen."),
         },
         Some(&Delim('.')) => {
             iter.next();
             match iter.next() {
-                Some(Ident(class)) => SimpleSelectorResult(ClassSelector(class)),
+                Some(Ident(class)) => SimpleSelectorResult(ClassSelector(class.into_owned())),
                 _ => InvalidSimpleSelector,
             }
         }
@@ -326,11 +327,9 @@ fn parse_one_simple_selector(iter: &mut Iter, namespaces: &NamespaceMap, inside_
         Some(&Colon) => {
             iter.next();
             match iter.next() {
-                Some(Ident(name)) => match parse_simple_pseudo_class(name) {
+                Some(Ident(name)) => match parse_simple_pseudo_class(name.as_slice()) {
                     None => {
-                        // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-                        let name_lower = name.to_ascii_lower();
-                        match name_lower.as_slice() {
+                        match name.as_slice().to_ascii_lower().as_slice() {
                             // Supported CSS 2.1 pseudo-elements only.
                             // ** Do not add to this list! **
                             "before" => PseudoElementResult(Before),
@@ -433,7 +432,7 @@ fn parse_qualified_name(iter: &mut Iter, in_attr_selector: bool, namespaces: &Na
 }
 
 
-fn parse_attribute_selector(content: ~[ComponentValue], namespaces: &NamespaceMap)
+fn parse_attribute_selector(content: Vec<ComponentValue>, namespaces: &NamespaceMap)
                             -> Option<SimpleSelector> {
     let iter = &mut content.move_iter().peekable();
     let attr = match parse_qualified_name(iter, /* in_attr_selector = */ true, namespaces) {
@@ -456,16 +455,16 @@ fn parse_attribute_selector(content: ~[ComponentValue], namespaces: &NamespaceMa
     }};)
     let result = match iter.next() {
         None => AttrExists(attr),  // [foo]
-        Some(Delim('=')) => AttrEqual(attr, get_value!()),  // [foo=bar]
-        Some(IncludeMatch) => AttrIncludes(attr, get_value!()),  // [foo~=bar]
+        Some(Delim('=')) => AttrEqual(attr, (get_value!()).into_owned()),  // [foo=bar]
+        Some(IncludeMatch) => AttrIncludes(attr, (get_value!()).into_owned()),  // [foo~=bar]
         Some(DashMatch) => {
             let value = get_value!();
-            let dashing_value = value + "-";
-            AttrDashMatch(attr, value, dashing_value)  // [foo|=bar]
+            let dashing_value = value.as_slice() + "-";
+            AttrDashMatch(attr, value.into_owned(), dashing_value)  // [foo|=bar]
         },
-        Some(PrefixMatch) => AttrPrefixMatch(attr, get_value!()),  // [foo^=bar]
-        Some(SubstringMatch) => AttrSubstringMatch(attr, get_value!()),  // [foo*=bar]
-        Some(SuffixMatch) => AttrSuffixMatch(attr, get_value!()),  // [foo$=bar]
+        Some(PrefixMatch) => AttrPrefixMatch(attr, (get_value!()).into_owned()),  // [foo^=bar]
+        Some(SubstringMatch) => AttrSubstringMatch(attr, (get_value!()).into_owned()),  // [foo*=bar]
+        Some(SuffixMatch) => AttrSuffixMatch(attr, (get_value!()).into_owned()),  // [foo$=bar]
         _ => return None
     };
     skip_whitespace(iter);
@@ -474,9 +473,7 @@ fn parse_attribute_selector(content: ~[ComponentValue], namespaces: &NamespaceMa
 
 
 fn parse_simple_pseudo_class(name: &str) -> Option<SimpleSelector> {
-    // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-    let name_lower = name.to_ascii_lower();
-    match name_lower.as_slice() {
+    match name.to_ascii_lower().as_slice() {
         "any-link" => Some(AnyLink),
         "link" => Some(Link),
         "visited" => Some(Visited),
@@ -494,27 +491,23 @@ fn parse_simple_pseudo_class(name: &str) -> Option<SimpleSelector> {
 }
 
 
-fn parse_functional_pseudo_class(name: ~str, arguments: ~[ComponentValue],
+fn parse_functional_pseudo_class(name: StrBuf, arguments: Vec<ComponentValue>,
                                  namespaces: &NamespaceMap, inside_negation: bool)
                                  -> Option<SimpleSelector> {
-    // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-    let name_lower = name.to_ascii_lower();
-    match name_lower.as_slice() {
+    match name.as_slice().to_ascii_lower().as_slice() {
 //        "lang" => parse_lang(arguments),
-        "nth-child"        => parse_nth(arguments).map(|(a, b)| NthChild(a, b)),
-        "nth-last-child"   => parse_nth(arguments).map(|(a, b)| NthLastChild(a, b)),
-        "nth-of-type"      => parse_nth(arguments).map(|(a, b)| NthOfType(a, b)),
-        "nth-last-of-type" => parse_nth(arguments).map(|(a, b)| NthLastOfType(a, b)),
+        "nth-child"        => parse_nth(arguments.as_slice()).map(|(a, b)| NthChild(a, b)),
+        "nth-last-child"   => parse_nth(arguments.as_slice()).map(|(a, b)| NthLastChild(a, b)),
+        "nth-of-type"      => parse_nth(arguments.as_slice()).map(|(a, b)| NthOfType(a, b)),
+        "nth-last-of-type" => parse_nth(arguments.as_slice()).map(|(a, b)| NthLastOfType(a, b)),
         "not" => if inside_negation { None } else { parse_negation(arguments, namespaces) },
         _ => None
     }
 }
 
 
-fn parse_pseudo_element(name: ~str) -> Option<PseudoElement> {
-    // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-    let name_lower = name.to_ascii_lower();
-    match name_lower.as_slice() {
+fn parse_pseudo_element(name: StrBuf) -> Option<PseudoElement> {
+    match name.as_slice().to_ascii_lower().as_slice() {
         // All supported pseudo-elements
         "before" => Some(Before),
         "after" => Some(After),
@@ -525,7 +518,7 @@ fn parse_pseudo_element(name: ~str) -> Option<PseudoElement> {
 }
 
 
-//fn parse_lang(arguments: ~[ComponentValue]) -> Option<SimpleSelector> {
+//fn parse_lang(arguments: vec!(ComponentValue)) -> Option<SimpleSelector> {
 //    let mut iter = arguments.move_skip_whitespace();
 //    match iter.next() {
 //        Some(Ident(value)) => {
@@ -538,7 +531,7 @@ fn parse_pseudo_element(name: ~str) -> Option<PseudoElement> {
 
 
 // Level 3: Parse ONE simple_selector
-fn parse_negation(arguments: ~[ComponentValue], namespaces: &NamespaceMap)
+fn parse_negation(arguments: Vec<ComponentValue>, namespaces: &NamespaceMap)
                   -> Option<SimpleSelector> {
     let iter = &mut arguments.move_iter().peekable();
     Some(Negation(match parse_type_selector(iter, namespaces) {
@@ -546,7 +539,7 @@ fn parse_negation(arguments: ~[ComponentValue], namespaces: &NamespaceMap)
         TypeSelector(s) => s,
         NotATypeSelector => {
             match parse_one_simple_selector(iter, namespaces, /* inside_negation = */ true) {
-                SimpleSelectorResult(s) => ~[s],
+                SimpleSelectorResult(s) => vec!(s),
                 _ => return None
             }
         },
@@ -558,7 +551,7 @@ fn parse_negation(arguments: ~[ComponentValue], namespaces: &NamespaceMap)
 #[inline]
 fn get_next_ident(iter: &mut Iter) -> ~str {
     match iter.next() {
-        Some(Ident(value)) => value,
+        Some(Ident(value)) => value.into_owned(),
         _ => fail!("Implementation error, this should not happen."),
     }
 }
@@ -577,19 +570,19 @@ fn skip_whitespace(iter: &mut Iter) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use extra::arc::Arc;
+    use sync::Arc;
     use cssparser;
     use servo_util::namespace;
     use namespaces::NamespaceMap;
     use super::*;
 
-    fn parse(input: &str) -> Option<~[Selector]> {
+    fn parse(input: &str) -> Option<Vec<Selector>> {
         parse_ns(input, &NamespaceMap::new())
     }
 
-    fn parse_ns(input: &str, namespaces: &NamespaceMap) -> Option<~[Selector]> {
+    fn parse_ns(input: &str, namespaces: &NamespaceMap) -> Option<Vec<Selector>> {
         parse_selector_list(
-            cssparser::tokenize(input).map(|(v, _)| v).to_owned_vec(),
+            cssparser::tokenize(input).map(|(v, _)| v).collect(),
             namespaces)
     }
 
@@ -599,114 +592,114 @@ mod tests {
 
     #[test]
     fn test_parsing() {
-        assert_eq!(parse(""), None)
-        assert_eq!(parse("e"), Some(~[Selector{
+        assert!(parse("") == None)
+        assert!(parse("e") == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[LocalNameSelector(~"e")],
+                simple_selectors: vec!(LocalNameSelector("e".to_owned())),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 0, 1),
-        }]))
-        assert_eq!(parse(".foo"), Some(~[Selector{
+        })))
+        assert!(parse(".foo") == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[ClassSelector(~"foo")],
+                simple_selectors: vec!(ClassSelector("foo".to_owned())),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 1, 0),
-        }]))
-        assert_eq!(parse("#bar"), Some(~[Selector{
+        })))
+        assert!(parse("#bar") == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[IDSelector(~"bar")],
+                simple_selectors: vec!(IDSelector("bar".to_owned())),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(1, 0, 0),
-        }]))
-        assert_eq!(parse("e.foo#bar"), Some(~[Selector{
+        })))
+        assert!(parse("e.foo#bar") == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[LocalNameSelector(~"e"),
-                                    ClassSelector(~"foo"),
-                                    IDSelector(~"bar")],
+                simple_selectors: vec!(LocalNameSelector("e".to_owned()),
+                                       ClassSelector("foo".to_owned()),
+                                       IDSelector("bar".to_owned())),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(1, 1, 1),
-        }]))
-        assert_eq!(parse("e.foo #bar"), Some(~[Selector{
+        })))
+        assert!(parse("e.foo #bar") == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[IDSelector(~"bar")],
-                next: Some((~CompoundSelector {
-                    simple_selectors: ~[LocalNameSelector(~"e"),
-                                        ClassSelector(~"foo")],
+                simple_selectors: vec!(IDSelector("bar".to_owned())),
+                next: Some((box CompoundSelector {
+                    simple_selectors: vec!(LocalNameSelector("e".to_owned()),
+                                           ClassSelector("foo".to_owned())),
                     next: None,
                 }, Descendant)),
             }),
             pseudo_element: None,
             specificity: specificity(1, 1, 1),
-        }]))
+        })))
         // Default namespace does not apply to attribute selectors
         // https://github.com/mozilla/servo/pull/1652
         let mut namespaces = NamespaceMap::new();
-        assert_eq!(parse_ns("[Foo]", &namespaces), Some(~[Selector{
+        assert!(parse_ns("[Foo]", &namespaces) == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[AttrExists(AttrSelector {
-                    name: ~"Foo",
-                    lower_name: ~"foo",
+                simple_selectors: vec!(AttrExists(AttrSelector {
+                    name: "Foo".to_owned(),
+                    lower_name: "foo".to_owned(),
                     namespace: SpecificNamespace(namespace::Null),
-                })],
+                })),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 1, 0),
-        }]))
+        })))
         // Default namespace does not apply to attribute selectors
         // https://github.com/mozilla/servo/pull/1652
         namespaces.default = Some(namespace::MathML);
-        assert_eq!(parse_ns("[Foo]", &namespaces), Some(~[Selector{
+        assert!(parse_ns("[Foo]", &namespaces) == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[AttrExists(AttrSelector {
-                    name: ~"Foo",
-                    lower_name: ~"foo",
+                simple_selectors: vec!(AttrExists(AttrSelector {
+                    name: "Foo".to_owned(),
+                    lower_name: "foo".to_owned(),
                     namespace: SpecificNamespace(namespace::Null),
-                })],
+                })),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 1, 0),
-        }]))
+        })))
         // Default namespace does apply to type selectors
-        assert_eq!(parse_ns("e", &namespaces), Some(~[Selector{
+        assert!(parse_ns("e", &namespaces) == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[
+                simple_selectors: vec!(
                     NamespaceSelector(namespace::MathML),
-                    LocalNameSelector(~"e"),
-                ],
+                    LocalNameSelector("e".to_owned()),
+                ),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 0, 1),
-        }]))
+        })))
         // https://github.com/mozilla/servo/issues/1723
-        assert_eq!(parse("::before"), Some(~[Selector{
+        assert!(parse("::before") == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[],
+                simple_selectors: vec!(),
                 next: None,
             }),
             pseudo_element: Some(Before),
             specificity: specificity(0, 0, 1),
-        }]))
-        assert_eq!(parse("div :after"), Some(~[Selector{
+        })))
+        assert!(parse("div :after") == Some(vec!(Selector{
             compound_selectors: Arc::new(CompoundSelector {
-                simple_selectors: ~[],
-                next: Some((~CompoundSelector {
-                    simple_selectors: ~[LocalNameSelector(~"div")],
+                simple_selectors: vec!(),
+                next: Some((box CompoundSelector {
+                    simple_selectors: vec!(LocalNameSelector("div".to_owned())),
                     next: None,
                 }, Descendant)),
             }),
             pseudo_element: Some(After),
             specificity: specificity(0, 0, 2),
-        }]))
+        })))
     }
 }

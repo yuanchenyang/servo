@@ -2,47 +2,53 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use dom::bindings::codegen::EventHandlerBinding::EventHandlerNonNull;
 use dom::bindings::codegen::InheritTypes::{DocumentDerived, EventCast, HTMLElementCast};
-use dom::bindings::codegen::InheritTypes::{DocumentBase, NodeCast, DocumentCast};
 use dom::bindings::codegen::InheritTypes::{HTMLHeadElementCast, TextCast, ElementCast};
-use dom::bindings::codegen::InheritTypes::{DocumentTypeCast, HTMLHtmlElementCast};
-use dom::bindings::codegen::DocumentBinding;
-use dom::bindings::js::JS;
+use dom::bindings::codegen::InheritTypes::{DocumentTypeCast, HTMLHtmlElementCast, NodeCast};
+use dom::bindings::codegen::InheritTypes::EventTargetCast;
+use dom::bindings::codegen::BindingDeclarations::DocumentBinding;
+use dom::bindings::js::{JS, JSRef, Temporary, OptionalSettable, TemporaryPushable};
+use dom::bindings::js::OptionalRootable;
+use dom::bindings::trace::Untraceable;
 use dom::bindings::utils::{Reflectable, Reflector, reflect_dom_object};
-use dom::bindings::utils::{ErrorResult, Fallible, NotSupported, InvalidCharacter, HierarchyRequest};
-use dom::bindings::utils::{xml_name_type, InvalidXMLName};
+use dom::bindings::error::{ErrorResult, Fallible, NotSupported, InvalidCharacter, HierarchyRequest, NamespaceError};
+use dom::bindings::utils::{xml_name_type, InvalidXMLName, Name, QName};
 use dom::comment::Comment;
+use dom::customevent::CustomEvent;
 use dom::documentfragment::DocumentFragment;
 use dom::documenttype::DocumentType;
 use dom::domimplementation::DOMImplementation;
-use dom::element::{Element};
+use dom::element::{Element, AttributeHandlers, get_attribute_parts};
 use dom::element::{HTMLHtmlElementTypeId, HTMLHeadElementTypeId, HTMLTitleElementTypeId};
 use dom::element::{HTMLBodyElementTypeId, HTMLFrameSetElementTypeId};
 use dom::event::Event;
-use dom::eventtarget::{EventTarget, NodeTargetTypeId};
-use dom::htmlcollection::HTMLCollection;
+use dom::eventtarget::{EventTarget, NodeTargetTypeId, EventTargetHelpers};
+use dom::htmlcollection::{HTMLCollection, CollectionFilter};
 use dom::htmlelement::HTMLElement;
 use dom::htmlheadelement::HTMLHeadElement;
 use dom::htmlhtmlelement::HTMLHtmlElement;
 use dom::htmltitleelement::HTMLTitleElement;
 use dom::mouseevent::MouseEvent;
-use dom::node::{Node, ElementNodeTypeId, DocumentNodeTypeId, NodeHelpers, INode};
+use dom::node::{Node, ElementNodeTypeId, DocumentNodeTypeId, NodeHelpers, NodeMethods};
+use dom::node::{CloneChildren, DoNotCloneChildren};
+use dom::nodelist::NodeList;
 use dom::text::Text;
 use dom::processinginstruction::ProcessingInstruction;
 use dom::uievent::UIEvent;
-use dom::window::Window;
+use dom::window::{Window, WindowMethods, WindowHelpers};
+use dom::location::Location;
 use html::hubbub_html_parser::build_element_from_tag;
 use hubbub::hubbub::{QuirksMode, NoQuirks, LimitedQuirks, FullQuirks};
 use layout_interface::{DocumentDamageLevel, ContentChangedDocumentDamage};
-use servo_util::namespace::Null;
-use servo_util::str::DOMString;
+use servo_util::namespace;
+use servo_util::namespace::{Namespace, Null};
+use servo_util::str::{DOMString, null_str_as_empty_ref};
 
-use extra::url::{Url, from_str};
-use js::jsapi::{JSObject, JSContext};
+use collections::hashmap::HashMap;
+use js::jsapi::JSContext;
 use std::ascii::StrAsciiExt;
-use std::hashmap::HashMap;
-
-use extra::serialize::{Encoder, Encodable};
+use url::{Url, from_str};
 
 #[deriving(Eq,Encodable)]
 pub enum IsHTMLDocument {
@@ -52,95 +58,188 @@ pub enum IsHTMLDocument {
 
 #[deriving(Encodable)]
 pub struct Document {
-    node: Node,
-    reflector_: Reflector,
-    window: JS<Window>,
-    idmap: HashMap<DOMString, JS<Element>>,
-    implementation: Option<JS<DOMImplementation>>,
-    content_type: DOMString,
-    encoding_name: DOMString,
-    is_html_document: bool,
-    extra: Untraceable,
-}
-
-struct Untraceable {
-    url: Url,
-    quirks_mode: QuirksMode,
-}
-
-impl<S: Encoder> Encodable<S> for Untraceable {
-    fn encode(&self, _: &mut S) {
-    }
+    pub node: Node,
+    pub reflector_: Reflector,
+    pub window: JS<Window>,
+    pub idmap: HashMap<DOMString, Vec<JS<Element>>>,
+    pub implementation: Option<JS<DOMImplementation>>,
+    pub content_type: DOMString,
+    pub encoding_name: DOMString,
+    pub is_html_document: bool,
+    pub url: Untraceable<Url>,
+    pub quirks_mode: Untraceable<QuirksMode>,
 }
 
 impl DocumentDerived for EventTarget {
     fn is_document(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(DocumentNodeTypeId) => true,
-            _ => false
+        self.type_id == NodeTargetTypeId(DocumentNodeTypeId)
+    }
+}
+
+pub trait DocumentHelpers {
+    fn url<'a>(&'a self) -> &'a Url;
+    fn quirks_mode(&self) -> QuirksMode;
+    fn set_quirks_mode(&mut self, mode: QuirksMode);
+    fn set_encoding_name(&mut self, name: DOMString);
+    fn content_changed(&self);
+    fn damage_and_reflow(&self, damage: DocumentDamageLevel);
+    fn wait_until_safe_to_modify_dom(&self);
+    fn unregister_named_element(&mut self, to_unregister: &JSRef<Element>, id: DOMString);
+    fn register_named_element(&mut self, element: &JSRef<Element>, id: DOMString);
+    fn load_anchor_href(&self, href: DOMString);
+}
+
+impl<'a> DocumentHelpers for JSRef<'a, Document> {
+    fn url<'a>(&'a self) -> &'a Url {
+        &*self.url
+    }
+
+    fn quirks_mode(&self) -> QuirksMode {
+        *self.quirks_mode
+    }
+
+    fn set_quirks_mode(&mut self, mode: QuirksMode) {
+        *self.quirks_mode = mode;
+    }
+
+    fn set_encoding_name(&mut self, name: DOMString) {
+        self.encoding_name = name;
+    }
+
+    fn content_changed(&self) {
+        self.damage_and_reflow(ContentChangedDocumentDamage);
+    }
+
+    fn damage_and_reflow(&self, damage: DocumentDamageLevel) {
+        self.window.root().damage_and_reflow(damage);
+    }
+
+    fn wait_until_safe_to_modify_dom(&self) {
+        self.window.root().wait_until_safe_to_modify_dom();
+    }
+
+
+    /// Remove any existing association between the provided id and any elements in this document.
+    fn unregister_named_element(&mut self,
+                                to_unregister: &JSRef<Element>,
+                                id: DOMString) {
+        let mut is_empty = false;
+        match self.idmap.find_mut(&id) {
+            None => {},
+            Some(elements) => {
+                let position = elements.iter()
+                                       .map(|elem| elem.root())
+                                       .position(|element| &*element == to_unregister)
+                                       .expect("This element should be in registered.");
+                elements.remove(position);
+                is_empty = elements.is_empty();
+            }
         }
+        if is_empty {
+            self.idmap.remove(&id);
+        }
+    }
+
+    /// Associate an element present in this document with the provided id.
+    fn register_named_element(&mut self,
+                              element: &JSRef<Element>,
+                              id: DOMString) {
+        assert!({
+            let node: &JSRef<Node> = NodeCast::from_ref(element);
+            node.is_in_doc()
+        });
+
+        // FIXME https://github.com/mozilla/rust/issues/13195
+        //       Use mangle() when it exists again.
+        let root = self.GetDocumentElement().expect("The element is in the document, so there must be a document element.").root();
+        match self.idmap.find_mut(&id) {
+            Some(elements) => {
+                let new_node: &JSRef<Node> = NodeCast::from_ref(element);
+                let mut head : uint = 0u;
+                let root: &JSRef<Node> = NodeCast::from_ref(&*root);
+                for node in root.traverse_preorder() {
+                    let elem: Option<&JSRef<Element>> = ElementCast::to_ref(&node);
+                    match elem {
+                        Some(elem) => {
+                            if &*elements.get(head).root() == elem {
+                                head = head + 1;
+                            }
+                            if new_node == &node || head == elements.len() {
+                                break;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                elements.insert_unrooted(head, element);
+                return;
+            },
+            None => (),
+        }
+        let mut elements = vec!();
+        elements.push_unrooted(element);
+        self.idmap.insert(id, elements);
+    }
+
+    fn load_anchor_href(&self, href: DOMString) {
+        let mut window = self.window.root();
+        window.load_url(href);
     }
 }
 
 impl Document {
-    pub fn reflect_document<D: Reflectable+DocumentBase>
-            (document:  ~D,
-             window:    &JS<Window>,
-             wrap_fn:   extern "Rust" fn(*JSContext, *JSObject, ~D) -> *JSObject)
-             -> JS<D> {
+    pub fn reflect_document(document: Box<Document>,
+                            window: &JSRef<Window>,
+                            wrap_fn: extern "Rust" fn(*mut JSContext, &JSRef<Window>, Box<Document>) -> JS<Document>)
+             -> Temporary<Document> {
         assert!(document.reflector().get_jsobject().is_null());
-        let raw_doc = reflect_dom_object(document, window.get(), wrap_fn);
+        let mut raw_doc = reflect_dom_object(document, window, wrap_fn).root();
         assert!(raw_doc.reflector().get_jsobject().is_not_null());
 
-        let document = DocumentCast::from(&raw_doc);
-        let mut node: JS<Node> = NodeCast::from(&document);
-        node.get_mut().set_owner_doc(&document);
-        raw_doc
+        let mut doc_alias = raw_doc.clone();
+        let node: &mut JSRef<Node> = NodeCast::from_mut_ref(&mut doc_alias);
+        node.set_owner_doc(&*raw_doc);
+        Temporary::from_rooted(&*raw_doc)
     }
 
-    pub fn new_inherited(window: JS<Window>,
+    pub fn new_inherited(window: &JSRef<Window>,
                          url: Option<Url>,
                          is_html_document: IsHTMLDocument,
                          content_type: Option<DOMString>) -> Document {
+        let url = url.unwrap_or_else(|| from_str("about:blank").unwrap());
+
         Document {
             node: Node::new_without_doc(DocumentNodeTypeId),
             reflector_: Reflector::new(),
-            window: window,
+            window: window.unrooted(),
             idmap: HashMap::new(),
             implementation: None,
             content_type: match content_type {
                 Some(string) => string.clone(),
                 None => match is_html_document {
                     // http://dom.spec.whatwg.org/#dom-domimplementation-createhtmldocument
-                    HTMLDocument => ~"text/html",
+                    HTMLDocument => "text/html".to_owned(),
                     // http://dom.spec.whatwg.org/#concept-document-content-type
-                    NonHTMLDocument => ~"application/xml"
+                    NonHTMLDocument => "application/xml".to_owned()
                 }
             },
-            extra: Untraceable {
-                url: match url {
-                    None => from_str("about:blank").unwrap(),
-                    Some(_url) => _url
-                },
-                // http://dom.spec.whatwg.org/#concept-document-quirks
-                quirks_mode: NoQuirks,
-            },
+            url: Untraceable::new(url),
+            // http://dom.spec.whatwg.org/#concept-document-quirks
+            quirks_mode: Untraceable::new(NoQuirks),
             // http://dom.spec.whatwg.org/#concept-document-encoding
-            encoding_name: ~"utf-8",
+            encoding_name: "utf-8".to_owned(),
             is_html_document: is_html_document == HTMLDocument,
         }
     }
 
-    pub fn new(window: &JS<Window>, url: Option<Url>, doctype: IsHTMLDocument, content_type: Option<DOMString>) -> JS<Document> {
-        let document = Document::new_inherited(window.clone(), url, doctype, content_type);
-        Document::reflect_document(~document, window, DocumentBinding::Wrap)
-    }
-}
-
-impl Document {
     // http://dom.spec.whatwg.org/#dom-document
-    pub fn Constructor(owner: &JS<Window>) -> Fallible<JS<Document>> {
+    pub fn Constructor(owner: &JSRef<Window>) -> Fallible<Temporary<Document>> {
         Ok(Document::new(owner, None, NonHTMLDocument, None))
+    }
+
+    pub fn new(window: &JSRef<Window>, url: Option<Url>, doctype: IsHTMLDocument, content_type: Option<DOMString>) -> Temporary<Document> {
+        let document = Document::new_inherited(window, url, doctype, content_type);
+        Document::reflect_document(box document, window, DocumentBinding::Wrap)
     }
 }
 
@@ -154,107 +253,246 @@ impl Reflectable for Document {
     }
 }
 
-impl Document {
-    // http://dom.spec.whatwg.org/#dom-document-implementation
-    pub fn Implementation(&mut self) -> JS<DOMImplementation> {
-        if self.implementation.is_none() {
-            self.implementation = Some(DOMImplementation::new(&self.window));
+trait PrivateDocumentHelpers {
+    fn createNodeList(&self, callback: |node: &JSRef<Node>| -> bool) -> Temporary<NodeList>;
+    fn get_html_element(&self) -> Option<Temporary<HTMLHtmlElement>>;
+}
+
+impl<'a> PrivateDocumentHelpers for JSRef<'a, Document> {
+    fn createNodeList(&self, callback: |node: &JSRef<Node>| -> bool) -> Temporary<NodeList> {
+        let window = self.window.root();
+
+        match self.GetDocumentElement().root() {
+            None => {
+                NodeList::new_simple_list(&*window, vec!())
+            },
+            Some(root) => {
+                let mut nodes = vec!();
+                let root: &JSRef<Node> = NodeCast::from_ref(&*root);
+                for child in root.traverse_preorder() {
+                    if callback(&child) {
+                        nodes.push(child);
+                    }
+                }
+                NodeList::new_simple_list(&*window, nodes)
+            }
         }
-        self.implementation.get_ref().clone()
+
+    }
+
+    fn get_html_element(&self) -> Option<Temporary<HTMLHtmlElement>> {
+        self.GetDocumentElement().root().filtered(|root| {
+            root.node.type_id == ElementNodeTypeId(HTMLHtmlElementTypeId)
+        }).map(|elem| {
+            Temporary::from_rooted(HTMLHtmlElementCast::to_ref(&*elem).unwrap())
+        })
+    }
+}
+
+pub trait DocumentMethods {
+    fn Implementation(&mut self) -> Temporary<DOMImplementation>;
+    fn URL(&self) -> DOMString;
+    fn DocumentURI(&self) -> DOMString;
+    fn CompatMode(&self) -> DOMString;
+    fn CharacterSet(&self) -> DOMString;
+    fn ContentType(&self) -> DOMString;
+    fn GetDoctype(&self) -> Option<Temporary<DocumentType>>;
+    fn GetDocumentElement(&self) -> Option<Temporary<Element>>;
+    fn GetElementsByTagName(&self, tag_name: DOMString) -> Temporary<HTMLCollection>;
+    fn GetElementsByTagNameNS(&self, maybe_ns: Option<DOMString>, tag_name: DOMString) -> Temporary<HTMLCollection>;
+    fn GetElementsByClassName(&self, classes: DOMString) -> Temporary<HTMLCollection>;
+    fn GetElementById(&self, id: DOMString) -> Option<Temporary<Element>>;
+    fn CreateElement(&self, local_name: DOMString) -> Fallible<Temporary<Element>>;
+    fn CreateElementNS(&self, namespace: Option<DOMString>, qualified_name: DOMString) -> Fallible<Temporary<Element>>;
+    fn CreateDocumentFragment(&self) -> Temporary<DocumentFragment>;
+    fn CreateTextNode(&self, data: DOMString) -> Temporary<Text>;
+    fn CreateComment(&self, data: DOMString) -> Temporary<Comment>;
+    fn CreateProcessingInstruction(&self, target: DOMString, data: DOMString) -> Fallible<Temporary<ProcessingInstruction>>;
+    fn ImportNode(&self, node: &JSRef<Node>, deep: bool) -> Fallible<Temporary<Node>>;
+    fn AdoptNode(&self, node: &mut JSRef<Node>) -> Fallible<Temporary<Node>>;
+    fn CreateEvent(&self, interface: DOMString) -> Fallible<Temporary<Event>>;
+    fn Title(&self) -> DOMString;
+    fn SetTitle(&self, title: DOMString) -> ErrorResult;
+    fn GetHead(&self) -> Option<Temporary<HTMLHeadElement>>;
+    fn GetBody(&self) -> Option<Temporary<HTMLElement>>;
+    fn SetBody(&self, new_body: Option<JSRef<HTMLElement>>) -> ErrorResult;
+    fn GetElementsByName(&self, name: DOMString) -> Temporary<NodeList>;
+    fn Images(&self) -> Temporary<HTMLCollection>;
+    fn Embeds(&self) -> Temporary<HTMLCollection>;
+    fn Plugins(&self) -> Temporary<HTMLCollection>;
+    fn Links(&self) -> Temporary<HTMLCollection>;
+    fn Forms(&self) -> Temporary<HTMLCollection>;
+    fn Scripts(&self) -> Temporary<HTMLCollection>;
+    fn Anchors(&self) -> Temporary<HTMLCollection>;
+    fn Applets(&self) -> Temporary<HTMLCollection>;
+    fn Location(&mut self) -> Temporary<Location>;
+    fn Children(&self) -> Temporary<HTMLCollection>;
+    fn GetOnload(&self) -> Option<EventHandlerNonNull>;
+    fn SetOnload(&mut self, listener: Option<EventHandlerNonNull>);
+}
+
+impl<'a> DocumentMethods for JSRef<'a, Document> {
+    // http://dom.spec.whatwg.org/#dom-document-implementation
+    fn Implementation(&mut self) -> Temporary<DOMImplementation> {
+        if self.implementation.is_none() {
+            let window = self.window.root();
+            self.implementation.assign(Some(DOMImplementation::new(&*window)));
+        }
+        Temporary::new(self.implementation.get_ref().clone())
     }
 
     // http://dom.spec.whatwg.org/#dom-document-url
-    pub fn URL(&self) -> DOMString {
-        self.extra.url.to_str()
+    fn URL(&self) -> DOMString {
+        self.url().to_str()
     }
 
     // http://dom.spec.whatwg.org/#dom-document-documenturi
-    pub fn DocumentURI(&self) -> DOMString {
+    fn DocumentURI(&self) -> DOMString {
         self.URL()
     }
 
     // http://dom.spec.whatwg.org/#dom-document-compatmode
-    pub fn CompatMode(&self) -> DOMString {
-        match self.extra.quirks_mode {
-            NoQuirks => ~"CSS1Compat",
-            LimitedQuirks | FullQuirks => ~"BackCompat"
+    fn CompatMode(&self) -> DOMString {
+        match *self.quirks_mode {
+            NoQuirks => "CSS1Compat".to_owned(),
+            LimitedQuirks | FullQuirks => "BackCompat".to_owned()
         }
     }
 
-    pub fn set_quirks_mode(&mut self, mode: QuirksMode) {
-        self.extra.quirks_mode = mode;
-    }
-
     // http://dom.spec.whatwg.org/#dom-document-characterset
-    pub fn CharacterSet(&self) -> DOMString {
+    fn CharacterSet(&self) -> DOMString {
         self.encoding_name.to_ascii_lower()
     }
 
-    pub fn set_encoding_name(&mut self, name: DOMString) {
-        self.encoding_name = name;
-    }
-
     // http://dom.spec.whatwg.org/#dom-document-content_type
-    pub fn ContentType(&self) -> DOMString {
+    fn ContentType(&self) -> DOMString {
         self.content_type.clone()
     }
 
     // http://dom.spec.whatwg.org/#dom-document-doctype
-    pub fn GetDoctype(&self) -> Option<JS<DocumentType>> {
-        self.node.children().find(|child| child.is_doctype())
-                            .map(|node| DocumentTypeCast::to(&node))
+    fn GetDoctype(&self) -> Option<Temporary<DocumentType>> {
+        let node: &JSRef<Node> = NodeCast::from_ref(self);
+        node.children().find(|child| {
+            child.is_doctype()
+        }).map(|node| {
+            let doctype: &JSRef<DocumentType> = DocumentTypeCast::to_ref(&node).unwrap();
+            Temporary::from_rooted(doctype)
+        })
     }
 
     // http://dom.spec.whatwg.org/#dom-document-documentelement
-    pub fn GetDocumentElement(&self) -> Option<JS<Element>> {
-        self.node.child_elements().next()
+    fn GetDocumentElement(&self) -> Option<Temporary<Element>> {
+        let node: &JSRef<Node> = NodeCast::from_ref(self);
+        node.child_elements().next().map(|elem| Temporary::from_rooted(&elem))
     }
 
     // http://dom.spec.whatwg.org/#dom-document-getelementsbytagname
-    pub fn GetElementsByTagName(&self, tag: DOMString) -> JS<HTMLCollection> {
-        self.createHTMLCollection(|elem| elem.tag_name == tag)
+    fn GetElementsByTagName(&self, tag_name: DOMString) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+        HTMLCollection::by_tag_name(&*window, NodeCast::from_ref(self), tag_name)
+    }
+
+    // http://dom.spec.whatwg.org/#dom-document-getelementsbytagnamens
+    fn GetElementsByTagNameNS(&self, maybe_ns: Option<DOMString>, tag_name: DOMString) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
+        let namespace = match maybe_ns {
+            Some(namespace) => Namespace::from_str(namespace),
+            None => Null
+        };
+        HTMLCollection::by_tag_name_ns(&*window, NodeCast::from_ref(self), tag_name, namespace)
+    }
+
+    // http://dom.spec.whatwg.org/#dom-document-getelementsbyclassname
+    fn GetElementsByClassName(&self, classes: DOMString) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
+        HTMLCollection::by_class_name(&*window, NodeCast::from_ref(self), classes)
     }
 
     // http://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid
-    pub fn GetElementById(&self, id: DOMString) -> Option<JS<Element>> {
-        // TODO: "in tree order, within the context object's tree"
-        // http://dom.spec.whatwg.org/#dom-document-getelementbyid.
+    fn GetElementById(&self, id: DOMString) -> Option<Temporary<Element>> {
         match self.idmap.find_equiv(&id) {
             None => None,
-            Some(node) => Some(node.clone()),
+            Some(ref elements) => Some(Temporary::new(elements.get(0).clone())),
         }
     }
 
     // http://dom.spec.whatwg.org/#dom-document-createelement
-    pub fn CreateElement(&self, abstract_self: &JS<Document>, local_name: DOMString)
-                         -> Fallible<JS<Element>> {
+    fn CreateElement(&self, local_name: DOMString) -> Fallible<Temporary<Element>> {
         if xml_name_type(local_name) == InvalidXMLName {
             debug!("Not a valid element name");
             return Err(InvalidCharacter);
         }
         let local_name = local_name.to_ascii_lower();
-        Ok(build_element_from_tag(local_name, abstract_self))
+        Ok(build_element_from_tag(local_name, self))
+    }
+
+    // http://dom.spec.whatwg.org/#dom-document-createelementns
+    fn CreateElementNS(&self,
+                       namespace: Option<DOMString>,
+                       qualified_name: DOMString) -> Fallible<Temporary<Element>> {
+        let ns = Namespace::from_str(null_str_as_empty_ref(&namespace));
+        match xml_name_type(qualified_name) {
+            InvalidXMLName => {
+                debug!("Not a valid element name");
+                return Err(InvalidCharacter);
+            },
+            Name => {
+                debug!("Not a valid qualified element name");
+                return Err(NamespaceError);
+            },
+            QName => {}
+        }
+
+        let (prefix_from_qname, local_name_from_qname) = get_attribute_parts(qualified_name);
+        match (&ns, prefix_from_qname.clone(), local_name_from_qname.as_slice()) {
+            // throw if prefix is not null and namespace is null
+            (&namespace::Null, Some(_), _) => {
+                debug!("Namespace can't be null with a non-null prefix");
+                return Err(NamespaceError);
+            },
+            // throw if prefix is "xml" and namespace is not the XML namespace
+            (_, Some(ref prefix), _) if "xml" == *prefix && ns != namespace::XML => {
+                debug!("Namespace must be the xml namespace if the prefix is 'xml'");
+                return Err(NamespaceError);
+            },
+            // throw if namespace is the XMLNS namespace and neither qualifiedName nor prefix is "xmlns"
+            (&namespace::XMLNS, Some(ref prefix), _) if "xmlns" == *prefix => {},
+            (&namespace::XMLNS, _, "xmlns") => {},
+            (&namespace::XMLNS, _, _) => {
+                debug!("The prefix or the qualified name must be 'xmlns' if namespace is the XMLNS namespace ");
+                return Err(NamespaceError);
+            },
+            _ => {}
+        }
+
+        if ns == namespace::HTML {
+            Ok(build_element_from_tag(local_name_from_qname, self))
+        } else {
+            Ok(Element::new(local_name_from_qname, ns, prefix_from_qname, self))
+        }
     }
 
     // http://dom.spec.whatwg.org/#dom-document-createdocumentfragment
-    pub fn CreateDocumentFragment(&self, abstract_self: &JS<Document>) -> JS<DocumentFragment> {
-        DocumentFragment::new(abstract_self)
+    fn CreateDocumentFragment(&self) -> Temporary<DocumentFragment> {
+        DocumentFragment::new(self)
     }
 
     // http://dom.spec.whatwg.org/#dom-document-createtextnode
-    pub fn CreateTextNode(&self, abstract_self: &JS<Document>, data: DOMString)
-                          -> JS<Text> {
-        Text::new(data, abstract_self)
+    fn CreateTextNode(&self, data: DOMString)
+                          -> Temporary<Text> {
+        Text::new(data, self)
     }
 
     // http://dom.spec.whatwg.org/#dom-document-createcomment
-    pub fn CreateComment(&self, abstract_self: &JS<Document>, data: DOMString) -> JS<Comment> {
-        Comment::new(data, abstract_self)
+    fn CreateComment(&self, data: DOMString) -> Temporary<Comment> {
+        Comment::new(data, self)
     }
 
     // http://dom.spec.whatwg.org/#dom-document-createprocessinginstruction
-    pub fn CreateProcessingInstruction(&self, abstract_self: &JS<Document>, target: DOMString,
-                                       data: DOMString) -> Fallible<JS<ProcessingInstruction>> {
+    fn CreateProcessingInstruction(&self, target: DOMString,
+                                       data: DOMString) -> Fallible<Temporary<ProcessingInstruction>> {
         // Step 1.
         if xml_name_type(target) == InvalidXMLName {
             return Err(InvalidCharacter);
@@ -266,65 +504,103 @@ impl Document {
         }
 
         // Step 3.
-        Ok(ProcessingInstruction::new(target, data, abstract_self))
+        Ok(ProcessingInstruction::new(target, data, self))
+    }
+
+    // http://dom.spec.whatwg.org/#dom-document-importnode
+    fn ImportNode(&self, node: &JSRef<Node>, deep: bool) -> Fallible<Temporary<Node>> {
+        // Step 1.
+        if node.is_document() {
+            return Err(NotSupported);
+        }
+
+        // Step 2.
+        let clone_children = match deep {
+            true => CloneChildren,
+            false => DoNotCloneChildren
+        };
+
+        Ok(Node::clone(node, Some(self), clone_children))
+    }
+
+    // http://dom.spec.whatwg.org/#dom-document-adoptnode
+    fn AdoptNode(&self, node: &mut JSRef<Node>) -> Fallible<Temporary<Node>> {
+        // Step 1.
+        if node.is_document() {
+            return Err(NotSupported);
+        }
+
+        // Step 2.
+        Node::adopt(node, self);
+
+        // Step 3.
+        Ok(Temporary::from_rooted(node))
     }
 
     // http://dom.spec.whatwg.org/#dom-document-createevent
-    pub fn CreateEvent(&self, interface: DOMString) -> Fallible<JS<Event>> {
-        match interface.as_slice() {
-            "UIEvents" => Ok(EventCast::from(&UIEvent::new(&self.window))),
-            "MouseEvents" => Ok(EventCast::from(&MouseEvent::new(&self.window))),
-            "HTMLEvents" => Ok(Event::new(&self.window)),
+    fn CreateEvent(&self, interface: DOMString) -> Fallible<Temporary<Event>> {
+        let window = self.window.root();
+
+        match interface.to_ascii_lower().as_slice() {
+            // FIXME: Implement CustomEvent (http://dom.spec.whatwg.org/#customevent)
+            "uievents" | "uievent" => Ok(EventCast::from_temporary(UIEvent::new_uninitialized(&*window))),
+            "mouseevents" | "mouseevent" => Ok(EventCast::from_temporary(MouseEvent::new_uninitialized(&*window))),
+            "customevent" => Ok(EventCast::from_temporary(CustomEvent::new_uninitialized(&*window))),
+            "htmlevents" | "events" | "event" => Ok(Event::new(&*window)),
             _ => Err(NotSupported)
         }
     }
 
     // http://www.whatwg.org/specs/web-apps/current-work/#document.title
-    pub fn Title(&self, _: &JS<Document>) -> DOMString {
-        let mut title = ~"";
-        self.GetDocumentElement().map(|root| {
-            let root: JS<Node> = NodeCast::from(&root);
+    fn Title(&self) -> DOMString {
+        let mut title = StrBuf::new();
+        self.GetDocumentElement().root().map(|root| {
+            let root: &JSRef<Node> = NodeCast::from_ref(&*root);
             root.traverse_preorder()
                 .find(|node| node.type_id() == ElementNodeTypeId(HTMLTitleElementTypeId))
                 .map(|title_elem| {
                     for child in title_elem.children() {
-                        let text: JS<Text> = TextCast::to(&child);
-                        title.push_str(text.get().characterdata.data.as_slice());
+                        if child.is_text() {
+                            let text: &JSRef<Text> = TextCast::to_ref(&child).unwrap();
+                            title.push_str(text.deref().characterdata.data.as_slice());
+                        }
                     }
                 });
         });
-        let v: ~[&str] = title.words().collect();
-        title = v.connect(" ");
-        title = title.trim().to_owned();
-        title
+        let v: Vec<&str> = title.as_slice().words().collect();
+        let title = v.connect(" ");
+        title.trim().to_owned()
     }
 
     // http://www.whatwg.org/specs/web-apps/current-work/#document.title
-    pub fn SetTitle(&self, abstract_self: &JS<Document>, title: DOMString) -> ErrorResult {
-        self.GetDocumentElement().map(|root| {
-            let root: JS<Node> = NodeCast::from(&root);
+    fn SetTitle(&self, title: DOMString) -> ErrorResult {
+        self.GetDocumentElement().root().map(|root| {
+            let root: &JSRef<Node> = NodeCast::from_ref(&*root);
             let mut head_node = root.traverse_preorder().find(|child| {
-                child.get().type_id == ElementNodeTypeId(HTMLHeadElementTypeId)
+                child.type_id() == ElementNodeTypeId(HTMLHeadElementTypeId)
             });
             head_node.as_mut().map(|head| {
                 let mut title_node = head.children().find(|child| {
-                    child.get().type_id == ElementNodeTypeId(HTMLTitleElementTypeId)
+                    child.type_id() == ElementNodeTypeId(HTMLTitleElementTypeId)
                 });
 
                 match title_node {
                     Some(ref mut title_node) => {
                         for mut title_child in title_node.children() {
-                            title_node.RemoveChild(&mut title_child);
+                            assert!(title_node.RemoveChild(&mut title_child).is_ok());
                         }
-                        let new_text = self.CreateTextNode(abstract_self, title.clone());
-                        title_node.AppendChild(&mut NodeCast::from(&new_text));
+                        let mut new_text = self.CreateTextNode(title.clone()).root();
+
+                        assert!(title_node.AppendChild(NodeCast::from_mut_ref(&mut *new_text)).is_ok());
                     },
                     None => {
-                        let mut new_title: JS<Node> =
-                            NodeCast::from(&HTMLTitleElement::new(~"title", abstract_self));
-                        let new_text = self.CreateTextNode(abstract_self, title.clone());
-                        new_title.AppendChild(&mut NodeCast::from(&new_text));
-                        head.AppendChild(&mut new_title);
+                        let mut new_title = HTMLTitleElement::new("title".to_owned(), self).root();
+                        let new_title: &mut JSRef<Node> = NodeCast::from_mut_ref(&mut *new_title);
+
+                        let mut new_text = self.CreateTextNode(title.clone()).root();
+
+                        assert!(new_title.AppendChild(NodeCast::from_mut_ref(&mut *new_text)).is_ok());
+                        assert!(head.AppendChild(&mut *new_title).is_ok());
                     },
                 }
             });
@@ -332,42 +608,43 @@ impl Document {
         Ok(())
     }
 
-    fn get_html_element(&self) -> Option<JS<HTMLHtmlElement>> {
-        self.GetDocumentElement().filtered(|root| {
-            root.get().node.type_id == ElementNodeTypeId(HTMLHtmlElementTypeId)
-        }).map(|elem| HTMLHtmlElementCast::to(&elem))
-    }
-
     // http://www.whatwg.org/specs/web-apps/current-work/#dom-document-head
-    pub fn GetHead(&self) -> Option<JS<HTMLHeadElement>> {
+    fn GetHead(&self) -> Option<Temporary<HTMLHeadElement>> {
         self.get_html_element().and_then(|root| {
-            let node: JS<Node> = NodeCast::from(&root);
+            let root = root.root();
+            let node: &JSRef<Node> = NodeCast::from_ref(&*root);
             node.children().find(|child| {
                 child.type_id() == ElementNodeTypeId(HTMLHeadElementTypeId)
-            }).map(|node| HTMLHeadElementCast::to(&node))
+            }).map(|node| {
+                Temporary::from_rooted(HTMLHeadElementCast::to_ref(&node).unwrap())
+            })
         })
     }
 
     // http://www.whatwg.org/specs/web-apps/current-work/#dom-document-body
-    pub fn GetBody(&self, _: &JS<Document>) -> Option<JS<HTMLElement>> {
+    fn GetBody(&self) -> Option<Temporary<HTMLElement>> {
         self.get_html_element().and_then(|root| {
-            let node: JS<Node> = NodeCast::from(&root);
+            let root = root.root();
+            let node: &JSRef<Node> = NodeCast::from_ref(&*root);
             node.children().find(|child| {
                 match child.type_id() {
                     ElementNodeTypeId(HTMLBodyElementTypeId) |
                     ElementNodeTypeId(HTMLFrameSetElementTypeId) => true,
                     _ => false
                 }
-            }).map(|node| HTMLElementCast::to(&node))
+            }).map(|node| {
+                Temporary::from_rooted(HTMLElementCast::to_ref(&node).unwrap())
+            })
         })
     }
 
     // http://www.whatwg.org/specs/web-apps/current-work/#dom-document-body
-    pub fn SetBody(&self, abstract_self: &JS<Document>, new_body: Option<JS<HTMLElement>>) -> ErrorResult {
+    fn SetBody(&self, new_body: Option<JSRef<HTMLElement>>) -> ErrorResult {
         // Step 1.
         match new_body {
-            Some(ref node) => {
-                match node.get().element.node.type_id {
+            Some(ref htmlelem) => {
+                let node: &JSRef<Node> = NodeCast::from_ref(htmlelem);
+                match node.type_id() {
                     ElementNodeTypeId(HTMLBodyElementTypeId) | ElementNodeTypeId(HTMLFrameSetElementTypeId) => {}
                     _ => return Err(HierarchyRequest)
                 }
@@ -376,24 +653,28 @@ impl Document {
         }
 
         // Step 2.
-        let old_body: Option<JS<HTMLElement>> = self.GetBody(abstract_self);
-        if old_body == new_body {
+        let mut old_body = self.GetBody().root();
+        //FIXME: covariant lifetime workaround. do not judge.
+        if old_body.as_ref().map(|body| body.deref()) == new_body.as_ref().map(|a| &*a) {
             return Ok(());
         }
 
         // Step 3.
-        match self.get_html_element() {
+        match self.get_html_element().root() {
             // Step 4.
             None => return Err(HierarchyRequest),
-            Some(root) => {
-                let mut new_body: JS<Node> = NodeCast::from(&new_body.unwrap());
-                let mut root: JS<Node> = NodeCast::from(&root);
+            Some(ref mut root) => {
+                let mut new_body_unwrapped = new_body.unwrap();
+                let new_body: &mut JSRef<Node> = NodeCast::from_mut_ref(&mut new_body_unwrapped);
+
+                let root: &mut JSRef<Node> = NodeCast::from_mut_ref(&mut **root);
                 match old_body {
-                    Some(child) => {
-                        let mut child: JS<Node> = NodeCast::from(&child);
-                        root.ReplaceChild(&mut new_body, &mut child)
+                    Some(ref mut child) => {
+                        let child: &mut JSRef<Node> = NodeCast::from_mut_ref(&mut **child);
+
+                        assert!(root.ReplaceChild(new_body, child).is_ok())
                     }
-                    None => root.AppendChild(&mut new_body)
+                    None => assert!(root.AppendChild(new_body).is_ok())
                 };
             }
         }
@@ -401,145 +682,140 @@ impl Document {
     }
 
     // http://www.whatwg.org/specs/web-apps/current-work/#dom-document-getelementsbyname
-    pub fn GetElementsByName(&self, name: DOMString) -> JS<HTMLCollection> {
-        self.createHTMLCollection(|elem| {
-            elem.get_attribute(Null, "name").map_default(false, |attr| {
-                attr.get().value_ref() == name
+    fn GetElementsByName(&self, name: DOMString) -> Temporary<NodeList> {
+        self.createNodeList(|node| {
+            if !node.is_element() {
+                return false;
+            }
+
+            let element: &JSRef<Element> = ElementCast::to_ref(node).unwrap();
+            element.get_attribute(Null, "name").root().map_or(false, |mut attr| {
+                attr.value_ref() == name
             })
         })
     }
 
-    pub fn Images(&self) -> JS<HTMLCollection> {
-        self.createHTMLCollection(|elem| "img" == elem.tag_name)
+    fn Images(&self) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
+        // FIXME: https://github.com/mozilla/servo/issues/1847
+        struct ImagesFilter;
+        impl CollectionFilter for ImagesFilter {
+            fn filter(&self, elem: &JSRef<Element>, _root: &JSRef<Node>) -> bool {
+                "img" == elem.deref().local_name
+            }
+        }
+        let filter = box ImagesFilter;
+        HTMLCollection::create(&*window, NodeCast::from_ref(self), filter)
     }
 
-    pub fn Embeds(&self) -> JS<HTMLCollection> {
-        self.createHTMLCollection(|elem| "embed" == elem.tag_name)
+    fn Embeds(&self) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
+        // FIXME: https://github.com/mozilla/servo/issues/1847
+        struct EmbedsFilter;
+        impl CollectionFilter for EmbedsFilter {
+            fn filter(&self, elem: &JSRef<Element>, _root: &JSRef<Node>) -> bool {
+                "embed" == elem.deref().local_name
+            }
+        }
+        let filter = box EmbedsFilter;
+        HTMLCollection::create(&*window, NodeCast::from_ref(self), filter)
     }
 
-    pub fn Plugins(&self) -> JS<HTMLCollection> {
+    fn Plugins(&self) -> Temporary<HTMLCollection> {
+        // FIXME: https://github.com/mozilla/servo/issues/1847
         self.Embeds()
     }
 
-    pub fn Links(&self) -> JS<HTMLCollection> {
-        self.createHTMLCollection(|elem| {
-            ("a" == elem.tag_name || "area" == elem.tag_name) &&
-            elem.get_attribute(Null, "href").is_some()
-        })
+    fn Links(&self) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
+        // FIXME: https://github.com/mozilla/servo/issues/1847
+        struct LinksFilter;
+        impl CollectionFilter for LinksFilter {
+            fn filter(&self, elem: &JSRef<Element>, _root: &JSRef<Node>) -> bool {
+                ("a" == elem.deref().local_name || "area" == elem.deref().local_name) &&
+                elem.get_attribute(Null, "href").is_some()
+            }
+        }
+        let filter = box LinksFilter;
+        HTMLCollection::create(&*window, NodeCast::from_ref(self), filter)
     }
 
-    pub fn Forms(&self) -> JS<HTMLCollection> {
-        self.createHTMLCollection(|elem| "form" == elem.tag_name)
+    fn Forms(&self) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
+        // FIXME: https://github.com/mozilla/servo/issues/1847
+        struct FormsFilter;
+        impl CollectionFilter for FormsFilter {
+            fn filter(&self, elem: &JSRef<Element>, _root: &JSRef<Node>) -> bool {
+                "form" == elem.deref().local_name
+            }
+        }
+        let filter = box FormsFilter;
+        HTMLCollection::create(&*window, NodeCast::from_ref(self), filter)
     }
 
-    pub fn Scripts(&self) -> JS<HTMLCollection> {
-        self.createHTMLCollection(|elem| "script" == elem.tag_name)
+    fn Scripts(&self) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
+        // FIXME: https://github.com/mozilla/servo/issues/1847
+        struct ScriptsFilter;
+        impl CollectionFilter for ScriptsFilter {
+            fn filter(&self, elem: &JSRef<Element>, _root: &JSRef<Node>) -> bool {
+                "script" == elem.deref().local_name
+            }
+        }
+        let filter = box ScriptsFilter;
+        HTMLCollection::create(&*window, NodeCast::from_ref(self), filter)
     }
 
-    pub fn Anchors(&self) -> JS<HTMLCollection> {
-        self.createHTMLCollection(|elem| {
-            "a" == elem.tag_name && elem.get_attribute(Null, "name").is_some()
-        })
+    fn Anchors(&self) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
+        // FIXME: https://github.com/mozilla/servo/issues/1847
+        struct AnchorsFilter;
+        impl CollectionFilter for AnchorsFilter {
+            fn filter(&self, elem: &JSRef<Element>, _root: &JSRef<Node>) -> bool {
+                "a" == elem.deref().local_name && elem.get_attribute(Null, "name").is_some()
+            }
+        }
+        let filter = box AnchorsFilter;
+        HTMLCollection::create(&*window, NodeCast::from_ref(self), filter)
     }
 
-    pub fn Applets(&self) -> JS<HTMLCollection> {
+    fn Applets(&self) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+
         // FIXME: This should be return OBJECT elements containing applets.
-        self.createHTMLCollection(|elem| "applet" == elem.tag_name)
-    }
-
-    pub fn createHTMLCollection(&self, callback: |elem: &Element| -> bool) -> JS<HTMLCollection> {
-        let mut elements = ~[];
-        match self.GetDocumentElement() {
-            None => {},
-            Some(root) => {
-                let root: JS<Node> = NodeCast::from(&root);
-                for child in root.traverse_preorder() {
-                    if child.is_element() {
-                        let elem: JS<Element> = ElementCast::to(&child);
-                        if callback(elem.get()) {
-                            elements.push(elem);
-                        }
-                    }
-                }
+        struct AppletsFilter;
+        impl CollectionFilter for AppletsFilter {
+            fn filter(&self, elem: &JSRef<Element>, _root: &JSRef<Node>) -> bool {
+                "applet" == elem.deref().local_name
             }
         }
-        HTMLCollection::new(&self.window, elements)
+        let filter = box AppletsFilter;
+        HTMLCollection::create(&*window, NodeCast::from_ref(self), filter)
     }
 
-    pub fn content_changed(&self) {
-        self.damage_and_reflow(ContentChangedDocumentDamage);
+    fn Location(&mut self) -> Temporary<Location> {
+        let mut window = self.window.root();
+        window.Location()
     }
 
-    pub fn damage_and_reflow(&self, damage: DocumentDamageLevel) {
-        self.window.get().damage_and_reflow(damage);
+    fn Children(&self) -> Temporary<HTMLCollection> {
+        let window = self.window.root();
+        HTMLCollection::children(&*window, NodeCast::from_ref(self))
     }
 
-    pub fn wait_until_safe_to_modify_dom(&self) {
-        self.window.get().wait_until_safe_to_modify_dom();
+    fn GetOnload(&self) -> Option<EventHandlerNonNull> {
+        let eventtarget: &JSRef<EventTarget> = EventTargetCast::from_ref(self);
+        eventtarget.get_event_handler_common("load")
     }
 
-    pub fn register_nodes_with_id(&mut self, root: &JS<Element>) {
-        foreach_ided_elements(root, |id: &DOMString, abstract_node: &JS<Element>| {
-            // TODO: "in tree order, within the context object's tree"
-            // http://dom.spec.whatwg.org/#dom-document-getelementbyid.
-            self.idmap.find_or_insert(id.clone(), abstract_node.clone());
-        });
-    }
-
-    pub fn unregister_nodes_with_id(&mut self, root: &JS<Element>) {
-        foreach_ided_elements(root, |id: &DOMString, _| {
-            // TODO: "in tree order, within the context object's tree"
-            // http://dom.spec.whatwg.org/#dom-document-getelementbyid.
-            self.idmap.pop(id);
-        });
-    }
-
-    pub fn update_idmap(&mut self,
-                        abstract_self: &JS<Element>,
-                        new_id: Option<DOMString>,
-                        old_id: Option<DOMString>) {
-        // remove old ids:
-        // * if the old ones are not same as the new one,
-        // * OR if the new one is none.
-        match old_id {
-            Some(ref old_id) if new_id.is_none() ||
-                                (*new_id.get_ref() != *old_id) => {
-                self.idmap.remove(old_id);
-            }
-            _ => ()
-        }
-
-        match new_id {
-            Some(new_id) => {
-                // TODO: support the case if multiple elements
-                // which haves same id are in the same document.
-                self.idmap.mangle(new_id, abstract_self.clone(),
-                                  |_, new_node: JS<Element>| -> JS<Element> {
-                                      new_node
-                                  },
-                                  |_, old_node: &mut JS<Element>, new_node: JS<Element>| {
-                                      *old_node = new_node;
-                                  });
-            }
-            None => ()
-        }
-    }
-}
-
-#[inline(always)]
-fn foreach_ided_elements(root: &JS<Element>, callback: |&DOMString, &JS<Element>|) {
-    let root: JS<Node> = NodeCast::from(root);
-    for node in root.traverse_preorder() {
-        if !node.is_element() {
-            continue;
-        }
-
-        let element: JS<Element> = ElementCast::to(&node);
-        match element.get().get_attribute(Null, "id") {
-            Some(id) => {
-                callback(&id.get().Value(), &element);
-            }
-            None => ()
-        }
+    fn SetOnload(&mut self, listener: Option<EventHandlerNonNull>) {
+        let eventtarget: &mut JSRef<EventTarget> = EventTargetCast::from_mut_ref(self);
+        eventtarget.set_event_handler_common("load", listener)
     }
 }

@@ -2,14 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-extern mod freetype;
+extern crate freetype;
 
 use font::{FontHandleMethods, FontMetrics, FontTableMethods};
 use font::{FontTableTag, FractionalPixel, SpecifiedFontStyle, UsedFontStyle};
 use servo_util::geometry::Au;
 use servo_util::geometry;
 use platform::font_context::FontContextHandle;
-use text::glyph::GlyphIndex;
+use text::glyph::GlyphId;
 use text::util::{float_to_fixed, fixed_to_float};
 use style::computed_values::font_weight;
 
@@ -46,17 +46,17 @@ impl FontTableMethods for FontTable {
     }
 }
 
-enum FontSource {
-    FontSourceMem(~[u8]),
+pub enum FontSource {
+    FontSourceMem(Vec<u8>),
     FontSourceFile(~str)
 }
 
 pub struct FontHandle {
     // The font binary. This must stay valid for the lifetime of the font,
     // if the font is created using FT_Memory_Face.
-    source: FontSource,
-    face: FT_Face,
-    handle: FontContextHandle
+    pub source: FontSource,
+    pub face: FT_Face,
+    pub handle: FontContextHandle
 }
 
 #[unsafe_destructor]
@@ -65,7 +65,7 @@ impl Drop for FontHandle {
         assert!(self.face.is_not_null());
         unsafe {
             if !FT_Done_Face(self.face).succeeded() {
-                fail!(~"FT_Done_Face failed");
+                fail!("FT_Done_Face failed");
             }
         }
     }
@@ -73,10 +73,10 @@ impl Drop for FontHandle {
 
 impl FontHandleMethods for FontHandle {
     fn new_from_buffer(fctx: &FontContextHandle,
-                           buf: ~[u8],
-                           style: &SpecifiedFontStyle)
+                       buf: Vec<u8>,
+                       style: &SpecifiedFontStyle)
                         -> Result<FontHandle, ()> {
-        let ft_ctx: FT_Library = fctx.ctx.borrow().ctx;
+        let ft_ctx: FT_Library = fctx.ctx.ctx;
         if ft_ctx.is_null() { return Err(()); }
 
         let face_result = create_face_from_buffer(ft_ctx, buf.as_ptr(), buf.len(), style.pt_size);
@@ -102,8 +102,8 @@ impl FontHandleMethods for FontHandle {
                  let mut face: FT_Face = ptr::null();
                  let face_index = 0 as FT_Long;
                  let result = FT_New_Memory_Face(lib, cbuf, cbuflen as FT_Long,
-                                                 face_index, ptr::to_mut_unsafe_ptr(&mut face));
-                 
+                                                 face_index, &mut face);
+
                  if !result.succeeded() || face.is_null() {
                      return Err(());
                  }
@@ -174,12 +174,12 @@ impl FontHandleMethods for FontHandle {
     }
 
     fn glyph_index(&self,
-                       codepoint: char) -> Option<GlyphIndex> {
+                       codepoint: char) -> Option<GlyphId> {
         assert!(self.face.is_not_null());
         unsafe {
             let idx = FT_Get_Char_Index(self.face, codepoint as FT_ULong);
             return if idx != 0 as FT_UInt {
-                Some(idx as GlyphIndex)
+                Some(idx as GlyphId)
             } else {
                 debug!("Invalid codepoint: {}", codepoint);
                 None
@@ -188,7 +188,7 @@ impl FontHandleMethods for FontHandle {
     }
 
     fn glyph_h_advance(&self,
-                           glyph: GlyphIndex) -> Option<FractionalPixel> {
+                           glyph: GlyphId) -> Option<FractionalPixel> {
         assert!(self.face.is_not_null());
         unsafe {
             let res =  FT_Load_Glyph(self.face, glyph as FT_UInt, 0);
@@ -279,14 +279,14 @@ impl<'a> FontHandle {
     pub fn new_from_file(fctx: &FontContextHandle, file: &str,
                          style: &SpecifiedFontStyle) -> Result<FontHandle, ()> {
         unsafe {
-            let ft_ctx: FT_Library = fctx.ctx.borrow().ctx;
+            let ft_ctx: FT_Library = fctx.ctx.ctx;
             if ft_ctx.is_null() { return Err(()); }
 
             let mut face: FT_Face = ptr::null();
             let face_index = 0 as FT_Long;
             file.to_c_str().with_ref(|file_str| {
                 FT_New_Face(ft_ctx, file_str,
-                            face_index, ptr::to_mut_unsafe_ptr(&mut face));
+                            face_index, &mut face);
             });
             if face.is_null() {
                 return Err(());
@@ -306,14 +306,14 @@ impl<'a> FontHandle {
     pub fn new_from_file_unstyled(fctx: &FontContextHandle, file: ~str)
                                -> Result<FontHandle, ()> {
         unsafe {
-            let ft_ctx: FT_Library = fctx.ctx.borrow().ctx;
+            let ft_ctx: FT_Library = fctx.ctx.ctx;
             if ft_ctx.is_null() { return Err(()); }
 
             let mut face: FT_Face = ptr::null();
             let face_index = 0 as FT_Long;
             file.to_c_str().with_ref(|file_str| {
                 FT_New_Face(ft_ctx, file_str,
-                            face_index, ptr::to_mut_unsafe_ptr(&mut face));
+                            face_index, &mut face);
             });
             if face.is_null() {
                 return Err(());

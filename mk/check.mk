@@ -81,13 +81,19 @@ check-servo: $(foreach lib_crate,$(SERVO_LIB_CRATES),check-servo-$(lib_crate)) s
 
 .PHONY: check-ref
 check-ref: reftest
-	@$(call E, check: reftests)
+	@$(call E, check: reftests with GPU rendering)
 	$(Q)./reftest $(S)src/test/ref/*.list
+	@$(call E, check: reftests with CPU rendering)
+	$(Q)./reftest $(S)src/test/ref/*.list -- -c
 
 .PHONY: check-content
 check-content: contenttest
 	@$(call E, check: contenttests)
-	$(Q)./contenttest --source-dir=$(S)src/test/html/content $(TESTNAME)
+	$(Q)./contenttest --source-dir=$(S)src/test/content $(TESTNAME)
+
+.PHONY: check-wpt
+check-wpt:
+	bash $(S)src/test/wpt/run.sh $(S) $(B) $(WPTARGS)
 
 .PHONY: tidy
 tidy:

@@ -2,140 +2,164 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLFormElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLFormElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLFormElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::{Element, HTMLFormElementTypeId};
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
-use dom::htmlcollection::HTMLCollection;
+use dom::htmlcollection::{HTMLCollection, Static};
 use dom::htmlelement::HTMLElement;
-use dom::node::{Node, ElementNodeTypeId};
+use dom::node::{Node, ElementNodeTypeId, window_from_node};
 use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLFormElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLFormElementDerived for EventTarget {
     fn is_htmlformelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLFormElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLFormElementTypeId))
     }
 }
 
 impl HTMLFormElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLFormElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLFormElement {
         HTMLFormElement {
             htmlelement: HTMLElement::new_inherited(HTMLFormElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLFormElement> {
-        let element = HTMLFormElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLFormElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLFormElement> {
+        let element = HTMLFormElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLFormElementBinding::Wrap)
     }
 }
 
-impl HTMLFormElement {
-    pub fn AcceptCharset(&self) -> DOMString {
-        ~""
+pub trait HTMLFormElementMethods {
+    fn AcceptCharset(&self) -> DOMString;
+    fn SetAcceptCharset(&mut self, _accept_charset: DOMString) -> ErrorResult;
+    fn Action(&self) -> DOMString;
+    fn SetAction(&mut self, _action: DOMString) -> ErrorResult;
+    fn Autocomplete(&self) -> DOMString;
+    fn SetAutocomplete(&mut self, _autocomplete: DOMString) -> ErrorResult;
+    fn Enctype(&self) -> DOMString;
+    fn SetEnctype(&mut self, _enctype: DOMString) -> ErrorResult;
+    fn Encoding(&self) -> DOMString;
+    fn SetEncoding(&mut self, _encoding: DOMString) -> ErrorResult;
+    fn Method(&self) -> DOMString;
+    fn SetMethod(&mut self, _method: DOMString) -> ErrorResult;
+    fn Name(&self) -> DOMString;
+    fn SetName(&mut self, _name: DOMString) -> ErrorResult;
+    fn NoValidate(&self) -> bool;
+    fn SetNoValidate(&mut self, _no_validate: bool) -> ErrorResult;
+    fn Target(&self) -> DOMString;
+    fn SetTarget(&mut self, _target: DOMString) -> ErrorResult;
+    fn Elements(&self) -> Temporary<HTMLCollection>;
+    fn Length(&self) -> i32;
+    fn Submit(&self) -> ErrorResult;
+    fn Reset(&self);
+    fn CheckValidity(&self) -> bool;
+    fn IndexedGetter(&self, _index: u32, _found: &mut bool) -> Temporary<Element>;
+}
+
+impl<'a> HTMLFormElementMethods for JSRef<'a, HTMLFormElement> {
+    fn AcceptCharset(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetAcceptCharset(&mut self, _accept_charset: DOMString) -> ErrorResult {
+    fn SetAcceptCharset(&mut self, _accept_charset: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Action(&self) -> DOMString {
-        ~""
+    fn Action(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetAction(&mut self, _action: DOMString) -> ErrorResult {
+    fn SetAction(&mut self, _action: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Autocomplete(&self) -> DOMString {
-        ~""
+    fn Autocomplete(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetAutocomplete(&mut self, _autocomplete: DOMString) -> ErrorResult {
+    fn SetAutocomplete(&mut self, _autocomplete: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Enctype(&self) -> DOMString {
-        ~""
+    fn Enctype(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetEnctype(&mut self, _enctype: DOMString) -> ErrorResult {
+    fn SetEnctype(&mut self, _enctype: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Encoding(&self) -> DOMString {
-        ~""
+    fn Encoding(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetEncoding(&mut self, _encoding: DOMString) -> ErrorResult {
+    fn SetEncoding(&mut self, _encoding: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Method(&self) -> DOMString {
-        ~""
+    fn Method(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetMethod(&mut self, _method: DOMString) -> ErrorResult {
+    fn SetMethod(&mut self, _method: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Name(&self) -> DOMString {
-        ~""
+    fn Name(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetName(&mut self, _name: DOMString) -> ErrorResult {
+    fn SetName(&mut self, _name: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn NoValidate(&self) -> bool {
+    fn NoValidate(&self) -> bool {
         false
     }
 
-    pub fn SetNoValidate(&mut self, _no_validate: bool) -> ErrorResult {
+    fn SetNoValidate(&mut self, _no_validate: bool) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Target(&self) -> DOMString {
-        ~""
+    fn Target(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetTarget(&mut self, _target: DOMString) -> ErrorResult {
+    fn SetTarget(&mut self, _target: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Elements(&self) -> JS<HTMLCollection> {
-        let doc = self.htmlelement.element.node.owner_doc();
-        let doc = doc.get();
-        HTMLCollection::new(&doc.window, ~[])
+    fn Elements(&self) -> Temporary<HTMLCollection> {
+        // FIXME: https://github.com/mozilla/servo/issues/1844
+        let window = window_from_node(self).root();
+        HTMLCollection::new(&*window, Static(vec!()))
     }
 
-    pub fn Length(&self) -> i32 {
+    fn Length(&self) -> i32 {
         0
     }
-    
-    pub fn Submit(&self) -> ErrorResult {
+
+    fn Submit(&self) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Reset(&self) {
+    fn Reset(&self) {
     }
 
-    pub fn CheckValidity(&self) -> bool {
+    fn CheckValidity(&self) -> bool {
         false
     }
 
-    pub fn IndexedGetter(&self, _index: u32, _found: &mut bool) -> JS<Element> {
+    fn IndexedGetter(&self, _index: u32, _found: &mut bool) -> Temporary<Element> {
         fail!("Not implemented.")
     }
 }

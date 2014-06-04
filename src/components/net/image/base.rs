@@ -10,7 +10,7 @@ use png;
 // reference count them.
 pub type Image = png::Image;
 
-pub fn Image(width: u32, height: u32, color_type: png::ColorType, data: ~[u8]) -> Image {
+pub fn Image(width: u32, height: u32, color_type: png::ColorType, data: Vec<u8>) -> Image {
     png::Image {
         width: width,
         height: height,
@@ -21,8 +21,8 @@ pub fn Image(width: u32, height: u32, color_type: png::ColorType, data: ~[u8]) -
 
 static TEST_IMAGE: &'static [u8] = include_bin!("test.jpeg");
 
-pub fn test_image_bin() -> ~[u8] {
-    TEST_IMAGE.into_owned()
+pub fn test_image_bin() -> Vec<u8> {
+    TEST_IMAGE.iter().map(|&x| x).collect()
 }
 
 // TODO(pcwalton): Speed up with SIMD, or better yet, find some way to not do this.
@@ -44,7 +44,7 @@ pub fn load_from_memory(buffer: &[u8]) -> Option<Image> {
     if png::is_png(buffer) {
         match png::load_png_from_memory(buffer) {
             Ok(mut png_image) => {
-                byte_swap(png_image.color_type, png_image.pixels);
+                byte_swap(png_image.color_type, png_image.pixels.as_mut_slice());
                 Some(png_image)
             }
             Err(_err) => None,
@@ -57,11 +57,11 @@ pub fn load_from_memory(buffer: &[u8]) -> Option<Image> {
         match stb_image::load_from_memory_with_depth(buffer, FORCE_DEPTH, true) {
             stb_image::ImageU8(mut image) => {
                 assert!(image.depth == 4);
-                byte_swap(png::RGBA8, image.data);
+                byte_swap(png::RGBA8, image.data.as_mut_slice());
                 Some(Image(image.width as u32, image.height as u32, png::RGBA8, image.data))
             }
-            stb_image::ImageF32(_image) => fail!(~"HDR images not implemented"),
-            stb_image::Error => None
+            stb_image::ImageF32(_image) => fail!("HDR images not implemented"),
+            stb_image::Error(_) => None
         }
     }
 }

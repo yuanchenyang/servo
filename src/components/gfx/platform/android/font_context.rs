@@ -14,13 +14,13 @@ use std::ptr;
 use std::rc::Rc;
 
 #[deriving(Clone)]
-struct FreeTypeLibraryHandle {
-    ctx: FT_Library,
+pub struct FreeTypeLibraryHandle {
+    pub ctx: FT_Library,
 }
 
 #[deriving(Clone)]
 pub struct FontContextHandle {
-    ctx: Rc<FreeTypeLibraryHandle>,
+    pub ctx: Rc<FreeTypeLibraryHandle>,
 }
 
 impl Drop for FreeTypeLibraryHandle {

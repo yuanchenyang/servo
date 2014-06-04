@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLSpanElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLSpanElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLSpanElementDerived;
-use dom::bindings::js::JS;
+use dom::bindings::js::{JSRef, Temporary};
 use dom::document::Document;
 use dom::element::HTMLSpanElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -14,27 +14,27 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLSpanElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLSpanElementDerived for EventTarget {
     fn is_htmlspanelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLSpanElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLSpanElementTypeId))
     }
 }
 
 impl HTMLSpanElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLSpanElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLSpanElement {
         HTMLSpanElement {
             htmlelement: HTMLElement::new_inherited(HTMLSpanElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLSpanElement> {
-        let element = HTMLSpanElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLSpanElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLSpanElement> {
+        let element = HTMLSpanElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLSpanElementBinding::Wrap)
     }
+}
+
+pub trait HTMLSpanElementMethods {
 }

@@ -4,93 +4,87 @@
 
 use geom::point::Point2D;
 use geom::rect::Rect;
-use geom::size::Size2D;
 
+use std::default::Default;
 use std::num::{NumCast, One, Zero};
 use std::fmt;
 
 // An Au is an "App Unit" and represents 1/60th of a CSS pixel.  It was
 // originally proposed in 2002 as a standard unit of measure in Gecko.
 // See https://bugzilla.mozilla.org/show_bug.cgi?id=177805 for more info.
-pub struct Au(i32);
+#[deriving(Clone, Eq, Ord, Zero)]
+pub struct Au(pub i32);
 
-// We don't use #[deriving] here for inlining.
-impl Clone for Au {
+impl Default for Au {
     #[inline]
-    fn clone(&self) -> Au {
-        Au(**self)
+    fn default() -> Au {
+        Au(0)
     }
 }
 
-impl fmt::Default for Au {
-    fn fmt(obj: &Au, f: &mut fmt::Formatter) {
-        let Au(n) = *obj;
-        write!(f.buf, "Au({})", n);
-    }
-}
-
-impl Eq for Au {
-    #[inline]
-    fn eq(&self, other: &Au) -> bool {
-        **self == **other
-    }
-    #[inline]
-    fn ne(&self, other: &Au) -> bool {
-        **self != **other
-    }
-}
+impl fmt::Show for Au {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let Au(n) = *self;
+        write!(f.buf, "Au(au={} px={})", n, to_frac_px(*self))
+    }}
 
 impl Add<Au,Au> for Au {
     #[inline]
-    fn add(&self, other: &Au) -> Au { Au(**self + **other) }
+    fn add(&self, other: &Au) -> Au {
+        let Au(s) = *self;
+        let Au(o) = *other;
+        Au(s + o)
+    }
 }
 
 impl Sub<Au,Au> for Au {
     #[inline]
-    fn sub(&self, other: &Au) -> Au { Au(**self - **other) }
+    fn sub(&self, other: &Au) -> Au {
+        let Au(s) = *self;
+        let Au(o) = *other;
+        Au(s - o)
+    }
+
 }
 
 impl Mul<Au,Au> for Au {
     #[inline]
-    fn mul(&self, other: &Au) -> Au { Au(**self * **other) }
+    fn mul(&self, other: &Au) -> Au {
+        let Au(s) = *self;
+        let Au(o) = *other;
+        Au(s * o)
+    }
 }
 
 impl Div<Au,Au> for Au {
     #[inline]
-    fn div(&self, other: &Au) -> Au { Au(**self / **other) }
+    fn div(&self, other: &Au) -> Au {
+        let Au(s) = *self;
+        let Au(o) = *other;
+        Au(s / o)
+    }
 }
 
 impl Rem<Au,Au> for Au {
     #[inline]
-    fn rem(&self, other: &Au) -> Au { Au(**self % **other) }
+    fn rem(&self, other: &Au) -> Au {
+        let Au(s) = *self;
+        let Au(o) = *other;
+        Au(s % o)
+    }
 }
 
 impl Neg<Au> for Au {
     #[inline]
-    fn neg(&self) -> Au { Au(-**self) }
-}
-
-impl Ord for Au {
-    #[inline]
-    fn lt(&self, other: &Au) -> bool { **self <  **other }
-    #[inline]
-    fn le(&self, other: &Au) -> bool { **self <= **other }
-    #[inline]
-    fn ge(&self, other: &Au) -> bool { **self >= **other }
-    #[inline]
-    fn gt(&self, other: &Au) -> bool { **self >  **other }
+    fn neg(&self) -> Au {
+        let Au(s) = *self;
+        Au(-s)
+    }
 }
 
 impl One for Au {
     #[inline]
     fn one() -> Au { Au(1) }
-}
-
-impl Zero for Au {
-    #[inline]
-    fn zero() -> Au { Au(0) }
-    #[inline]
-    fn is_zero(&self) -> bool { **self == 0 }
 }
 
 impl Num for Au {}
@@ -110,22 +104,26 @@ impl NumCast for Au {
 impl ToPrimitive for Au {
     #[inline]
     fn to_i64(&self) -> Option<i64> {
-        Some(**self as i64)
+        let Au(s) = *self;
+        Some(s as i64)
     }
 
     #[inline]
     fn to_u64(&self) -> Option<u64> {
-        Some(**self as u64)
+        let Au(s) = *self;
+        Some(s as u64)
     }
 
     #[inline]
     fn to_f32(&self) -> Option<f32> {
-        (**self).to_f32()
+        let Au(s) = *self;
+        s.to_f32()
     }
 
     #[inline]
     fn to_f64(&self) -> Option<f64> {
-        (**self).to_f64()
+        let Au(s) = *self;
+        s.to_f64()
     }
 }
 
@@ -138,7 +136,8 @@ impl Au {
 
     #[inline]
     pub fn scale_by(self, factor: f64) -> Au {
-        Au(((*self as f64) * factor) as i32)
+        let Au(s) = self;
+        Au(((s as f64) * factor) as i32)
     }
 
     #[inline]
@@ -148,25 +147,16 @@ impl Au {
 
     #[inline]
     pub fn to_nearest_px(&self) -> int {
-        ((**self as f64) / 60f64).round() as int
+        let Au(s) = *self;
+        ((s as f64) / 60f64).round() as int
     }
 
     #[inline]
     pub fn to_snapped(&self) -> Au {
-        let res = **self % 60i32;
-        return if res >= 30i32 { return Au(**self - res + 60i32) }
-                       else { return Au(**self - res) };
-    }
-
-    #[inline]
-    pub fn zero_point() -> Point2D<Au> {
-        Point2D(Au(0), Au(0))
-    }
-
-    #[inline]
-    pub fn zero_rect() -> Rect<Au> {
-        let z = Au(0);
-        Rect(Point2D(z, z), Size2D(z, z))
+        let Au(s) = *self;
+        let res = s % 60i32;
+        return if res >= 30i32 { return Au(s - res + 60i32) }
+                       else { return Au(s - res) };
     }
 
     #[inline]
@@ -180,9 +170,18 @@ impl Au {
     }
 
     #[inline]
-    pub fn min(x: Au, y: Au) -> Au { if *x < *y { x } else { y } }
+    pub fn min(x: Au, y: Au) -> Au {
+        let Au(xi) = x;
+        let Au(yi) = y;
+        if xi < yi { x } else { y }
+    }
+
     #[inline]
-    pub fn max(x: Au, y: Au) -> Au { if *x > *y { x } else { y } }
+    pub fn max(x: Au, y: Au) -> Au {
+        let Au(xi) = x;
+        let Au(yi) = y;
+        if xi > yi { x } else { y }
+    }
 }
 
 // assumes 72 points per inch, and 96 px per inch
@@ -195,19 +194,6 @@ pub fn px_to_pt(px: f64) -> f64 {
     px / 96f64 * 72f64
 }
 
-pub fn zero_rect() -> Rect<Au> {
-    let z = Au(0);
-    Rect(Point2D(z, z), Size2D(z, z))
-}
-
-pub fn zero_point() -> Point2D<Au> {
-    Point2D(Au(0), Au(0))
-}
-
-pub fn zero_size() -> Size2D<Au> {
-    Size2D(Au(0), Au(0))
-}
-
 pub fn from_frac_px(px: f64) -> Au {
     Au((px * 60f64) as i32)
 }
@@ -217,11 +203,13 @@ pub fn from_px(px: int) -> Au {
 }
 
 pub fn to_px(au: Au) -> int {
-    (*au / 60) as int
+    let Au(a) = au;
+    (a / 60) as int
 }
 
 pub fn to_frac_px(au: Au) -> f64 {
-    (*au as f64) / 60f64
+    let Au(a) = au;
+    (a as f64) / 60f64
 }
 
 // assumes 72 points per inch, and 96 px per inch
@@ -231,6 +219,15 @@ pub fn from_pt(pt: f64) -> Au {
 
 // assumes 72 points per inch, and 96 px per inch
 pub fn to_pt(au: Au) -> f64 {
-    (*au as f64) / 60f64 * 72f64 / 96f64
+    let Au(a) = au;
+    (a as f64) / 60f64 * 72f64 / 96f64
+}
+
+/// Returns true if the rect contains the given point. Points on the top or left sides of the rect
+/// are considered inside the rectangle, while points on the right or bottom sides of the rect are
+/// not considered inside the rectangle.
+pub fn rect_contains_point<T:Ord + Add<T,T>>(rect: Rect<T>, point: Point2D<T>) -> bool {
+    point.x >= rect.origin.x && point.x < rect.origin.x + rect.size.width &&
+        point.y >= rect.origin.y && point.y < rect.origin.y + rect.size.height
 }
 

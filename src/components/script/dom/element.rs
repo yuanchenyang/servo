@@ -4,44 +4,43 @@
 
 //! Element nodes.
 
-use dom::attr::Attr;
+use dom::attr::{Attr, ReplacedAttr, FirstSetAttr, AttrMethods};
 use dom::attrlist::AttrList;
-use dom::bindings::codegen::InheritTypes::{ElementDerived, HTMLImageElementCast};
-use dom::bindings::codegen::InheritTypes::{HTMLIFrameElementCast, NodeCast};
-use dom::bindings::codegen::InheritTypes::HTMLObjectElementCast;
-use dom::bindings::js::JS;
+use dom::bindings::codegen::BindingDeclarations::ElementBinding;
+use dom::bindings::codegen::InheritTypes::{ElementDerived, NodeCast};
+use dom::bindings::js::{JS, JSRef, Temporary, TemporaryPushable};
+use dom::bindings::js::{OptionalSettable, OptionalRootable, Root};
 use dom::bindings::utils::{Reflectable, Reflector};
-use dom::bindings::utils::{ErrorResult, Fallible, NamespaceError, InvalidCharacter};
+use dom::bindings::error::{ErrorResult, Fallible, NamespaceError, InvalidCharacter};
 use dom::bindings::utils::{QName, Name, InvalidXMLName, xml_name_type};
-use dom::htmlcollection::HTMLCollection;
 use dom::clientrect::ClientRect;
 use dom::clientrectlist::ClientRectList;
-use dom::document::Document;
+use dom::document::{Document, DocumentHelpers};
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
-use dom::htmlimageelement::HTMLImageElement;
-use dom::htmliframeelement::HTMLIFrameElement;
-use dom::htmlobjectelement::HTMLObjectElement;
-use dom::node::{ElementNodeTypeId, Node, NodeHelpers, NodeIterator};
+use dom::htmlcollection::HTMLCollection;
 use dom::htmlserializer::serialize;
-use layout_interface::{ContentBoxQuery, ContentBoxResponse, ContentBoxesQuery};
-use layout_interface::{ContentBoxesResponse, ContentChangedDocumentDamage};
-use layout_interface::{MatchSelectorsDocumentDamage};
+use dom::node::{ElementNodeTypeId, Node, NodeHelpers, NodeIterator, document_from_node};
+use dom::node::{window_from_node, LayoutNodeHelpers};
+use dom::virtualmethods::{VirtualMethods, vtable_for};
+use layout_interface::ContentChangedDocumentDamage;
+use layout_interface::MatchSelectorsDocumentDamage;
 use style;
 use servo_util::namespace;
 use servo_util::namespace::{Namespace, Null};
-use servo_util::str::{DOMString, null_str_as_empty_ref};
+use servo_util::str::{DOMString, null_str_as_empty_ref, split_html_space_chars};
 
 use std::ascii::StrAsciiExt;
 use std::cast;
 
 #[deriving(Encodable)]
 pub struct Element {
-    node: Node,
-    tag_name: DOMString,     // TODO: This should be an atom, not a DOMString.
-    namespace: Namespace,
-    attrs: ~[JS<Attr>],
-    style_attribute: Option<style::PropertyDeclarationBlock>,
-    attr_list: Option<JS<AttrList>>
+    pub node: Node,
+    pub local_name: DOMString,     // TODO: This should be an atom, not a DOMString.
+    pub namespace: Namespace,
+    pub prefix: Option<DOMString>,
+    pub attrs: Vec<JS<Attr>>,
+    pub style_attribute: Option<style::PropertyDeclarationBlock>,
+    pub attr_list: Option<JS<AttrList>>
 }
 
 impl ElementDerived for EventTarget {
@@ -90,7 +89,7 @@ pub enum ElementTypeId {
     HTMLHeadElementTypeId,
     HTMLHeadingElementTypeId,
     HTMLHtmlElementTypeId,
-    HTMLIframeElementTypeId,
+    HTMLIFrameElementTypeId,
     HTMLImageElementTypeId,
     HTMLInputElementTypeId,
     HTMLLabelElementTypeId,
@@ -133,6 +132,8 @@ pub enum ElementTypeId {
     HTMLUListElementTypeId,
     HTMLVideoElementTypeId,
     HTMLUnknownElementTypeId,
+
+    ElementTypeId,
 }
 
 //
@@ -140,224 +141,246 @@ pub enum ElementTypeId {
 //
 
 impl Element {
-    pub fn new_inherited(type_id: ElementTypeId, tag_name: ~str, namespace: Namespace, document: JS<Document>) -> Element {
+    pub fn new_inherited(type_id: ElementTypeId, local_name: DOMString, namespace: Namespace, prefix: Option<DOMString>, document: &JSRef<Document>) -> Element {
         Element {
             node: Node::new_inherited(ElementNodeTypeId(type_id), document),
-            tag_name: tag_name,
+            local_name: local_name,
             namespace: namespace,
-            attrs: ~[],
+            prefix: prefix,
+            attrs: vec!(),
             attr_list: None,
             style_attribute: None,
         }
     }
 
-    pub fn html_element_in_html_document(&self) -> bool {
-        self.namespace == namespace::HTML &&
-        self.node.owner_doc().get().is_html_document
+    pub fn new(local_name: DOMString, namespace: Namespace, prefix: Option<DOMString>, document: &JSRef<Document>) -> Temporary<Element> {
+        let element = Element::new_inherited(ElementTypeId, local_name, namespace, prefix, document);
+        Node::reflect_node(box element, document, ElementBinding::Wrap)
     }
+}
 
-    pub fn get_attribute(&self,
-                         namespace: Namespace,
-                         name: &str) -> Option<JS<Attr>> {
-        self.attrs.iter().find(|attr| {
-            let attr = attr.get();
-            name == attr.local_name && attr.namespace == namespace
-        }).map(|x| x.clone())
-    }
+pub trait RawLayoutElementHelpers {
+    unsafe fn get_attr_val_for_layout(&self, namespace: &Namespace, name: &str) -> Option<&'static str>;
+}
 
+impl RawLayoutElementHelpers for Element {
     #[inline]
-    pub unsafe fn get_attr_val_for_layout(&self, namespace: &Namespace, name: &str)
-                                          -> Option<&'static str> {
+    unsafe fn get_attr_val_for_layout(&self, namespace: &Namespace, name: &str)
+                                      -> Option<&'static str> {
         self.attrs.iter().find(|attr: & &JS<Attr>| {
-            // unsafely avoid a borrow because this is accessed by many tasks
-            // during parallel layout
-            let attr: ***Attr = cast::transmute(attr);
-            name == (***attr).local_name && (***attr).namespace == *namespace
+            let attr = attr.unsafe_get();
+            name == (*attr).local_name && (*attr).namespace == *namespace
        }).map(|attr| {
-            let attr: **Attr = cast::transmute(attr);
-            cast::transmute((**attr).value.as_slice())
+            let attr = attr.unsafe_get();
+            cast::transmute((*attr).value.as_slice())
         })
     }
+}
 
-    pub fn set_attr(&mut self, abstract_self: &JS<Element>, name: DOMString, value: DOMString)
-                    -> ErrorResult {
-        self.set_attribute(abstract_self, namespace::Null, name, value)
+pub trait LayoutElementHelpers {
+    unsafe fn html_element_in_html_document_for_layout(&self) -> bool;
+}
+
+impl LayoutElementHelpers for JS<Element> {
+    unsafe fn html_element_in_html_document_for_layout(&self) -> bool {
+        if (*self.unsafe_get()).namespace != namespace::HTML {
+            return false
+        }
+        let node: JS<Node> = self.transmute_copy();
+        let owner_doc = node.owner_doc_for_layout().unsafe_get();
+        (*owner_doc).is_html_document
+    }
+}
+
+pub trait ElementHelpers {
+    fn html_element_in_html_document(&self) -> bool;
+}
+
+impl<'a> ElementHelpers for JSRef<'a, Element> {
+    fn html_element_in_html_document(&self) -> bool {
+        let is_html = self.namespace == namespace::HTML;
+        let node: &JSRef<Node> = NodeCast::from_ref(self);
+        is_html && node.owner_doc().root().is_html_document
+    }
+}
+
+pub trait AttributeHandlers {
+    fn get_attribute(&self, namespace: Namespace, name: &str) -> Option<Temporary<Attr>>;
+    fn set_attribute_from_parser(&mut self, local_name: DOMString,
+                                 value: DOMString, namespace: Namespace,
+                                 prefix: Option<DOMString>);
+    fn set_attribute(&mut self, namespace: Namespace, name: DOMString,
+                     value: DOMString) -> ErrorResult;
+    fn do_set_attribute(&mut self, local_name: DOMString, value: DOMString,
+                        name: DOMString, namespace: Namespace,
+                        prefix: Option<DOMString>, cb: |&JSRef<Attr>| -> bool);
+
+    fn remove_attribute(&mut self, namespace: Namespace, name: DOMString) -> ErrorResult;
+    fn notify_attribute_changed(&self, local_name: DOMString);
+    fn has_class(&self, name: &str) -> bool;
+
+    // http://www.whatwg.org/html/#reflecting-content-attributes-in-idl-attributes
+    fn get_url_attribute(&self, name: &str) -> DOMString;
+    fn set_url_attribute(&mut self, name: &str, value: DOMString);
+    fn get_string_attribute(&self, name: &str) -> DOMString;
+    fn set_string_attribute(&mut self, name: &str, value: DOMString);
+    fn set_uint_attribute(&mut self, name: &str, value: u32);
+}
+
+impl<'a> AttributeHandlers for JSRef<'a, Element> {
+    fn get_attribute(&self, namespace: Namespace, name: &str) -> Option<Temporary<Attr>> {
+        let element: &Element = self.deref();
+        let is_html_element = self.html_element_in_html_document();
+
+        element.attrs.iter().map(|attr| attr.root()).find(|attr| {
+            let same_name = if is_html_element {
+                name.to_ascii_lower() == attr.local_name
+            } else {
+                name == attr.local_name
+            };
+
+            same_name && attr.namespace == namespace
+        }).map(|x| Temporary::from_rooted(&*x))
     }
 
-    pub fn set_attribute(&mut self,
-                         abstract_self: &JS<Element>,
-                         namespace: Namespace,
-                         name: DOMString,
-                         value: DOMString) -> ErrorResult {
+    fn set_attribute_from_parser(&mut self, local_name: DOMString,
+                                 value: DOMString, namespace: Namespace,
+                                 prefix: Option<DOMString>) {
+        let name = match prefix {
+            None => local_name.clone(),
+            Some(ref prefix) => format!("{:s}:{:s}", *prefix, local_name),
+        };
+        self.do_set_attribute(local_name, value, name, namespace, prefix, |_| false)
+    }
+
+    fn set_attribute(&mut self, namespace: Namespace, name: DOMString,
+                     value: DOMString) -> ErrorResult {
         let (prefix, local_name) = get_attribute_parts(name.clone());
         match prefix {
             Some(ref prefix_str) => {
-                if (namespace == namespace::Null ||
-                    ("xml" == prefix_str.as_slice() && namespace != namespace::XML) ||
-                    ("xmlns" == prefix_str.as_slice() && namespace != namespace::XMLNS)) {
+                if namespace == namespace::Null ||
+                   ("xml" == prefix_str.as_slice() && namespace != namespace::XML) ||
+                   ("xmlns" == prefix_str.as_slice() && namespace != namespace::XMLNS) {
                     return Err(NamespaceError);
                 }
             },
             None => {}
         }
 
-        self.node.wait_until_safe_to_modify_dom();
+        let self_alias = self.clone();
+        let node: &JSRef<Node> = NodeCast::from_ref(&self_alias);
+        node.wait_until_safe_to_modify_dom();
 
-        // FIXME: reduce the time of `value.clone()`.
-        let mut old_raw_value: Option<DOMString> = None;
-        for attr in self.attrs.mut_iter() {
-            let attr = attr.get_mut();
-            if attr.local_name == local_name {
-                old_raw_value = Some(attr.set_value(value.clone()));
-                break;
-            }
-        }
-
-        if old_raw_value.is_none() {
-            let doc = self.node.owner_doc();
-            let doc = doc.get();
-            let new_attr = Attr::new_ns(doc.window.get(), local_name.clone(), value.clone(),
-                                        name.clone(), namespace.clone(),
-                                        prefix);
-            self.attrs.push(new_attr);
-        }
-
-        if namespace == namespace::Null {
-            self.after_set_attr(abstract_self, local_name, value, old_raw_value);
-        }
+        let position: |&JSRef<Attr>| -> bool =
+            if self.html_element_in_html_document() {
+                |attr| attr.deref().local_name.eq_ignore_ascii_case(local_name)
+            } else {
+                |attr| attr.deref().local_name == local_name
+            };
+        self.do_set_attribute(name.clone(), value, name.clone(), namespace::Null, None, position);
         Ok(())
     }
 
-    fn after_set_attr(&mut self,
-                      abstract_self: &JS<Element>,
-                      local_name: DOMString,
-                      value: DOMString,
-                      old_value: Option<DOMString>) {
+    fn do_set_attribute(&mut self, local_name: DOMString, value: DOMString,
+                        name: DOMString, namespace: Namespace,
+                        prefix: Option<DOMString>, cb: |&JSRef<Attr>| -> bool) {
+        let idx = self.deref().attrs.iter()
+                                    .map(|attr| attr.root())
+                                    .position(|attr| cb(&*attr));
+        let (idx, set_type) = match idx {
+            Some(idx) => (idx, ReplacedAttr),
+            None => {
+                let window = window_from_node(self).root();
+                let attr = Attr::new(&*window, local_name.clone(), value.clone(),
+                                     name, namespace.clone(), prefix, self);
+                self.deref_mut().attrs.push_unrooted(&attr);
+                (self.deref().attrs.len() - 1, FirstSetAttr)
+            }
+        };
 
-        match local_name.as_slice() {
-            "style" => {
-                let doc = self.node.owner_doc();
-                let base_url = doc.get().extra.url.clone();
-                self.style_attribute = Some(style::parse_style_attribute(value, &base_url))
-            }
-            "id" => {
-                let self_node: JS<Node> = NodeCast::from(abstract_self);
-                if self_node.is_in_doc() {
-                    // XXX: this dual declaration are workaround to avoid the compile error:
-                    // "borrowed value does not live long enough"
-                    let mut doc = self.node.owner_doc();
-                    let doc = doc.get_mut();
-                    doc.update_idmap(abstract_self, Some(value.clone()), old_value);
-                }
-            }
-            _ => ()
-        }
-
-        //XXXjdm We really need something like a vtable so we can call AfterSetAttr.
-        //       This hardcoding is awful.
-        match abstract_self.get().node.type_id {
-            ElementNodeTypeId(HTMLImageElementTypeId) => {
-                let mut elem: JS<HTMLImageElement> = HTMLImageElementCast::to(abstract_self);
-                elem.get_mut().AfterSetAttr(local_name.clone(), value.clone());
-            }
-            ElementNodeTypeId(HTMLIframeElementTypeId) => {
-                let mut elem: JS<HTMLIFrameElement> = HTMLIFrameElementCast::to(abstract_self);
-                elem.get_mut().AfterSetAttr(local_name.clone(), value.clone());
-            }
-            ElementNodeTypeId(HTMLObjectElementTypeId) => {
-                let mut elem: JS<HTMLObjectElement> = HTMLObjectElementCast::to(abstract_self);
-                elem.get_mut().AfterSetAttr(local_name.clone(), value.clone());
-            }
-            _ => ()
-        }
-
-        self.notify_attribute_changed(abstract_self, local_name);
+        self.deref_mut().attrs.get(idx).root().set_value(set_type, value);
     }
 
-    pub fn remove_attribute(&mut self,
-                            abstract_self: &JS<Element>,
-                            namespace: Namespace,
-                            name: DOMString) -> ErrorResult {
+    fn remove_attribute(&mut self, namespace: Namespace, name: DOMString) -> ErrorResult {
         let (_, local_name) = get_attribute_parts(name.clone());
 
-        self.node.wait_until_safe_to_modify_dom();
-
-        let idx = self.attrs.iter().position(|attr: &JS<Attr>| -> bool {
-            attr.get().local_name == local_name
+        let idx = self.deref().attrs.iter().map(|attr| attr.root()).position(|attr| {
+            attr.local_name == local_name
         });
 
         match idx {
             None => (),
             Some(idx) => {
-                let removed = self.attrs.remove(idx);
-                let removed_raw_value = Some(removed.get().Value());
+                {
+                    let node: &mut JSRef<Node> = NodeCast::from_mut_ref(self);
+                    node.wait_until_safe_to_modify_dom();
+                }
 
                 if namespace == namespace::Null {
-                    self.after_remove_attr(abstract_self, local_name, removed_raw_value);
+                    let removed_raw_value = self.deref().attrs.get(idx).root().Value();
+                    vtable_for(NodeCast::from_mut_ref(self))
+                        .before_remove_attr(local_name.clone(), removed_raw_value);
                 }
+
+                self.deref_mut().attrs.remove(idx);
             }
         };
 
         Ok(())
     }
 
-    fn after_remove_attr(&mut self,
-                         abstract_self: &JS<Element>,
-                         local_name: DOMString,
-                         old_value: Option<DOMString>) {
-        match local_name.as_slice() {
-            "style" => {
-                self.style_attribute = None
-            }
-            "id" => {
-                let self_node: JS<Node> = NodeCast::from(abstract_self);
-                if self_node.is_in_doc() {
-                    // XXX: this dual declaration are workaround to avoid the compile error:
-                    // "borrowed value does not live long enough"
-                    let mut doc = self.node.owner_doc();
-                    let doc = doc.get_mut();
-                    doc.update_idmap(abstract_self, None, old_value);
-                }
-            }
-            _ => ()
-        }
-
-        //XXXjdm We really need something like a vtable so we can call AfterSetAttr.
-        //       This hardcoding is awful.
-        match abstract_self.get().node.type_id {
-            ElementNodeTypeId(HTMLImageElementTypeId) => {
-                let mut elem: JS<HTMLImageElement> = HTMLImageElementCast::to(abstract_self);
-                elem.get_mut().AfterRemoveAttr(local_name.clone());
-            }
-            ElementNodeTypeId(HTMLIframeElementTypeId) => {
-                let mut elem: JS<HTMLIFrameElement> = HTMLIFrameElementCast::to(abstract_self);
-                elem.get_mut().AfterRemoveAttr(local_name.clone());
-            }
-            _ => ()
-        }
-
-        self.notify_attribute_changed(abstract_self, local_name);
-    }
-
-    fn notify_attribute_changed(&self,
-                                abstract_self: &JS<Element>,
-                                local_name: DOMString) {
-        let node: JS<Node> = NodeCast::from(abstract_self);
+    fn notify_attribute_changed(&self, local_name: DOMString) {
+        let node: &JSRef<Node> = NodeCast::from_ref(self);
         if node.is_in_doc() {
             let damage = match local_name.as_slice() {
                 "style" | "id" | "class" => MatchSelectorsDocumentDamage,
                 _ => ContentChangedDocumentDamage
             };
-            let document = self.node.owner_doc();
-            document.get().damage_and_reflow(damage);
+            let document = node.owner_doc().root();
+            document.deref().damage_and_reflow(damage);
         }
     }
 
+    fn has_class(&self, name: &str) -> bool {
+        let class_names = self.get_string_attribute("class");
+        let mut classes = split_html_space_chars(class_names);
+        classes.any(|class| name == class)
+    }
+
+    fn get_url_attribute(&self, name: &str) -> DOMString {
+        // XXX Resolve URL.
+        self.get_string_attribute(name)
+    }
+    fn set_url_attribute(&mut self, name: &str, value: DOMString) {
+        self.set_string_attribute(name, value);
+    }
+
+    fn get_string_attribute(&self, name: &str) -> DOMString {
+        match self.get_attribute(Null, name) {
+            Some(x) => {
+                let x = x.root();
+                x.deref().Value()
+            }
+            None => "".to_owned()
+        }
+    }
+    fn set_string_attribute(&mut self, name: &str, value: DOMString) {
+        assert!(name == name.to_ascii_lower());
+        assert!(self.set_attribute(Null, name.to_owned(), value).is_ok());
+    }
+
+    fn set_uint_attribute(&mut self, name: &str, value: u32) {
+        assert!(name == name.to_ascii_lower());
+        assert!(self.set_attribute(Null, name.to_owned(), value.to_str()).is_ok());
+    }
+}
+
+impl Element {
     pub fn is_void(&self) -> bool {
         if self.namespace != namespace::HTML {
             return false
         }
-        match self.tag_name.as_slice() {
+        match self.local_name.as_slice() {
             /* List of void elements from
             http://www.whatwg.org/specs/web-apps/current-work/multipage/the-end.html#html-fragment-serialization-algorithm */
             "area" | "base" | "basefont" | "bgsound" | "br" | "col" | "embed" |
@@ -368,293 +391,407 @@ impl Element {
     }
 }
 
-// http://www.whatwg.org/html/#reflecting-content-attributes-in-idl-attributes
-impl Element {
-    pub fn get_url_attribute(&self, name: &str) -> DOMString {
-        // XXX Resolve URL.
-        self.get_string_attribute(name)
-    }
-    pub fn set_url_attribute(&mut self, abstract_self: &JS<Element>,
-                             name: &str, value: DOMString) {
-        self.set_string_attribute(abstract_self, name, value);
-    }
-
-    pub fn get_string_attribute(&self, name: &str) -> DOMString {
-        match self.get_attribute(Null, name) {
-            Some(x) => x.get().Value(),
-            None => ~""
-        }
-    }
-    pub fn set_string_attribute(&mut self, abstract_self: &JS<Element>,
-                                name: &str, value: DOMString) {
-        assert!(name == name.to_ascii_lower());
-        self.set_attribute(abstract_self, Null, name.to_owned(), value);
-    }
+pub trait ElementMethods {
+    fn NamespaceURI(&self) -> DOMString;
+    fn LocalName(&self) -> DOMString;
+    fn GetPrefix(&self) -> Option<DOMString>;
+    fn TagName(&self) -> DOMString;
+    fn Id(&self) -> DOMString;
+    fn SetId(&mut self, id: DOMString);
+    fn ClassName(&self) -> DOMString;
+    fn SetClassName(&mut self, class: DOMString);
+    fn Attributes(&mut self) -> Temporary<AttrList>;
+    fn GetAttribute(&self, name: DOMString) -> Option<DOMString>;
+    fn GetAttributeNS(&self, namespace: Option<DOMString>, local_name: DOMString) -> Option<DOMString>;
+    fn SetAttribute(&mut self, name: DOMString, value: DOMString) -> ErrorResult;
+    fn SetAttributeNS(&mut self, namespace_url: Option<DOMString>, name: DOMString, value: DOMString) -> ErrorResult;
+    fn RemoveAttribute(&mut self, name: DOMString) -> ErrorResult;
+    fn RemoveAttributeNS(&mut self, namespace: Option<DOMString>, localname: DOMString) -> ErrorResult;
+    fn HasAttribute(&self, name: DOMString) -> bool;
+    fn HasAttributeNS(&self, namespace: Option<DOMString>, local_name: DOMString) -> bool;
+    fn GetElementsByTagName(&self, localname: DOMString) -> Temporary<HTMLCollection>;
+    fn GetElementsByTagNameNS(&self, maybe_ns: Option<DOMString>, localname: DOMString) -> Temporary<HTMLCollection>;
+    fn GetElementsByClassName(&self, classes: DOMString) -> Temporary<HTMLCollection>;
+    fn GetClientRects(&self) -> Temporary<ClientRectList>;
+    fn GetBoundingClientRect(&self) -> Temporary<ClientRect>;
+    fn GetInnerHTML(&self) -> Fallible<DOMString>;
+    fn GetOuterHTML(&self) -> Fallible<DOMString>;
+    fn Children(&self) -> Temporary<HTMLCollection>;
+    fn Remove(&mut self);
 }
 
-impl Element {
+impl<'a> ElementMethods for JSRef<'a, Element> {
+    // http://dom.spec.whatwg.org/#dom-element-namespaceuri
+    fn NamespaceURI(&self) -> DOMString {
+        self.namespace.to_str().to_owned()
+    }
+
+    fn LocalName(&self) -> DOMString {
+        self.local_name.clone()
+    }
+
+    // http://dom.spec.whatwg.org/#dom-element-prefix
+    fn GetPrefix(&self) -> Option<DOMString> {
+        self.prefix.clone()
+    }
+
     // http://dom.spec.whatwg.org/#dom-element-tagname
-    pub fn TagName(&self) -> DOMString {
-        self.tag_name.to_ascii_upper()
+    fn TagName(&self) -> DOMString {
+        match self.prefix {
+            None => {
+                self.local_name.to_ascii_upper()
+            }
+            Some(ref prefix_str) => {
+                (*prefix_str + ":" + self.local_name).to_ascii_upper()
+            }
+        }
     }
 
     // http://dom.spec.whatwg.org/#dom-element-id
-    pub fn Id(&self, _abstract_self: &JS<Element>) -> DOMString {
+    fn Id(&self) -> DOMString {
         self.get_string_attribute("id")
     }
 
     // http://dom.spec.whatwg.org/#dom-element-id
-    pub fn SetId(&mut self, abstract_self: &JS<Element>, id: DOMString) {
-        self.set_string_attribute(abstract_self, "id", id);
+    fn SetId(&mut self, id: DOMString) {
+        self.set_string_attribute("id", id);
+    }
+
+    // http://dom.spec.whatwg.org/#dom-element-classname
+    fn ClassName(&self) -> DOMString {
+        self.get_string_attribute("class")
+    }
+
+    // http://dom.spec.whatwg.org/#dom-element-classname
+    fn SetClassName(&mut self, class: DOMString) {
+        self.set_string_attribute("class", class);
     }
 
     // http://dom.spec.whatwg.org/#dom-element-attributes
-    pub fn Attributes(&mut self, abstract_self: &JS<Element>) -> JS<AttrList> {
+    fn Attributes(&mut self) -> Temporary<AttrList> {
         match self.attr_list {
-            None => {
-                let doc = self.node.owner_doc();
-                let doc = doc.get();
-                let list = AttrList::new(&doc.window, abstract_self);
-                self.attr_list = Some(list.clone());
-                list
-            }
-            Some(ref list) => list.clone()
+            None => (),
+            Some(ref list) => return Temporary::new(list.clone()),
         }
+
+        let doc = {
+            let node: &JSRef<Node> = NodeCast::from_ref(self);
+            node.owner_doc().root()
+        };
+        let window = doc.deref().window.root();
+        let list = AttrList::new(&*window, self);
+        self.attr_list.assign(Some(list));
+        Temporary::new(self.attr_list.get_ref().clone())
     }
 
     // http://dom.spec.whatwg.org/#dom-element-getattribute
-    pub fn GetAttribute(&self, name: DOMString) -> Option<DOMString> {
+    fn GetAttribute(&self, name: DOMString) -> Option<DOMString> {
         let name = if self.html_element_in_html_document() {
             name.to_ascii_lower()
         } else {
             name
         };
-        self.get_attribute(Null, name).map(|s| s.get().Value())
+        self.get_attribute(Null, name).root()
+                     .map(|s| s.deref().Value())
     }
 
     // http://dom.spec.whatwg.org/#dom-element-getattributens
-    pub fn GetAttributeNS(&self, namespace: Option<DOMString>, local_name: DOMString) -> Option<DOMString> {
+    fn GetAttributeNS(&self,
+                      namespace: Option<DOMString>,
+                      local_name: DOMString) -> Option<DOMString> {
         let namespace = Namespace::from_str(null_str_as_empty_ref(&namespace));
-        self.get_attribute(namespace, local_name)
-            .map(|attr| attr.get().value.clone())
+        self.get_attribute(namespace, local_name).root()
+                     .map(|attr| attr.deref().Value())
     }
 
     // http://dom.spec.whatwg.org/#dom-element-setattribute
-    pub fn SetAttribute(&mut self, abstract_self: &JS<Element>, name: DOMString, value: DOMString)
-                        -> ErrorResult {
-        // FIXME: If name does not match the Name production in XML, throw an "InvalidCharacterError" exception.
+    fn SetAttribute(&mut self,
+                    name: DOMString,
+                    value: DOMString) -> ErrorResult {
+        {
+            let node: &JSRef<Node> = NodeCast::from_ref(self);
+            node.wait_until_safe_to_modify_dom();
+        }
+
+        // Step 1.
+        match xml_name_type(name) {
+            InvalidXMLName => return Err(InvalidCharacter),
+            _ => {}
+        }
+
+        // Step 2.
         let name = if self.html_element_in_html_document() {
             name.to_ascii_lower()
         } else {
             name
         };
-        self.set_attr(abstract_self, name, value)
+
+        // Step 3-5.
+        self.do_set_attribute(name.clone(), value, name.clone(), namespace::Null, None, |attr| {
+            attr.deref().name == name
+        });
+        Ok(())
     }
 
     // http://dom.spec.whatwg.org/#dom-element-setattributens
-    pub fn SetAttributeNS(&mut self,
-                          abstract_self: &JS<Element>,
-                          namespace_url: Option<DOMString>,
-                          name: DOMString,
-                          value: DOMString) -> ErrorResult {
+    fn SetAttributeNS(&mut self,
+                      namespace_url: Option<DOMString>,
+                      name: DOMString,
+                      value: DOMString) -> ErrorResult {
+        {
+            let node: &JSRef<Node> = NodeCast::from_ref(self);
+            node.wait_until_safe_to_modify_dom();
+        }
+
+        // Step 1.
+        let namespace = Namespace::from_str(null_str_as_empty_ref(&namespace_url));
+
         let name_type = xml_name_type(name);
         match name_type {
+            // Step 2.
             InvalidXMLName => return Err(InvalidCharacter),
+            // Step 3.
             Name => return Err(NamespaceError),
             QName => {}
         }
 
-        let namespace = Namespace::from_str(null_str_as_empty_ref(&namespace_url));
-        self.set_attribute(abstract_self, namespace, name, value)
+        // Step 4.
+        let (prefix, local_name) = get_attribute_parts(name.clone());
+        match prefix {
+            Some(ref prefix_str) => {
+                // Step 5.
+                if namespace == namespace::Null {
+                    return Err(NamespaceError);
+                }
+
+                // Step 6.
+                if "xml" == prefix_str.as_slice() && namespace != namespace::XML {
+                    return Err(NamespaceError);
+                }
+
+                // Step 7b.
+                if "xmlns" == prefix_str.as_slice() && namespace != namespace::XMLNS {
+                    return Err(NamespaceError);
+                }
+            },
+            None => {}
+        }
+
+        // Step 7a.
+        if "xmlns" == name && namespace != namespace::XMLNS {
+            return Err(NamespaceError);
+        }
+
+        // Step 8.
+        if namespace == namespace::XMLNS && "xmlns" != name && Some("xmlns".to_owned()) != prefix {
+            return Err(NamespaceError);
+        }
+
+        // Step 9.
+        self.do_set_attribute(local_name.clone(), value, name, namespace.clone(), prefix, |attr| {
+            attr.deref().local_name == local_name &&
+            attr.deref().namespace == namespace
+        });
+        Ok(())
     }
 
     // http://dom.spec.whatwg.org/#dom-element-removeattribute
-    pub fn RemoveAttribute(&mut self,
-                           abstract_self: &JS<Element>,
-                           name: DOMString) -> ErrorResult {
+    fn RemoveAttribute(&mut self,
+                       name: DOMString) -> ErrorResult {
         let name = if self.html_element_in_html_document() {
             name.to_ascii_lower()
         } else {
             name
         };
-        self.remove_attribute(abstract_self, namespace::Null, name)
+        self.remove_attribute(namespace::Null, name)
     }
 
     // http://dom.spec.whatwg.org/#dom-element-removeattributens
-    pub fn RemoveAttributeNS(&mut self,
-                             abstract_self: &JS<Element>,
-                             namespace: Option<DOMString>,
-                             localname: DOMString) -> ErrorResult {
+    fn RemoveAttributeNS(&mut self,
+                         namespace: Option<DOMString>,
+                         localname: DOMString) -> ErrorResult {
         let namespace = Namespace::from_str(null_str_as_empty_ref(&namespace));
-        self.remove_attribute(abstract_self, namespace, localname)
+        self.remove_attribute(namespace, localname)
     }
 
     // http://dom.spec.whatwg.org/#dom-element-hasattribute
-    pub fn HasAttribute(&self, name: DOMString) -> bool {
+    fn HasAttribute(&self,
+                    name: DOMString) -> bool {
         self.GetAttribute(name).is_some()
     }
 
     // http://dom.spec.whatwg.org/#dom-element-hasattributens
-    pub fn HasAttributeNS(&self, namespace: Option<DOMString>, local_name: DOMString) -> bool {
+    fn HasAttributeNS(&self,
+                      namespace: Option<DOMString>,
+                      local_name: DOMString) -> bool {
         self.GetAttributeNS(namespace, local_name).is_some()
     }
 
-    // http://dom.spec.whatwg.org/#dom-element-getelementsbytagname
-    pub fn GetElementsByTagName(&self, _localname: DOMString) -> JS<HTMLCollection> {
-        // FIXME: stub - https://github.com/mozilla/servo/issues/1660
-        let doc = self.node.owner_doc();
-        HTMLCollection::new(&doc.get().window, ~[])
+    fn GetElementsByTagName(&self, localname: DOMString) -> Temporary<HTMLCollection> {
+        let window = window_from_node(self).root();
+        HTMLCollection::by_tag_name(&*window, NodeCast::from_ref(self), localname)
     }
 
-    // http://dom.spec.whatwg.org/#dom-element-getelementsbytagnamens
-    pub fn GetElementsByTagNameNS(&self, _namespace: Option<DOMString>, _localname: DOMString) -> Fallible<JS<HTMLCollection>> {
-        // FIXME: stub - https://github.com/mozilla/servo/issues/1660
-        let doc = self.node.owner_doc();
-        Ok(HTMLCollection::new(&doc.get().window, ~[]))
+    fn GetElementsByTagNameNS(&self, maybe_ns: Option<DOMString>,
+                              localname: DOMString) -> Temporary<HTMLCollection> {
+        let namespace = match maybe_ns {
+            Some(namespace) => Namespace::from_str(namespace),
+            None => Null
+        };
+        let window = window_from_node(self).root();
+        HTMLCollection::by_tag_name_ns(&*window, NodeCast::from_ref(self), localname, namespace)
     }
 
-    // http://dom.spec.whatwg.org/#dom-element-getelementsbyclassname
-    pub fn GetElementsByClassName(&self, _names: DOMString) -> JS<HTMLCollection> {
-        // FIXME: stub - https://github.com/mozilla/servo/issues/1660
-        let doc = self.node.owner_doc();
-        HTMLCollection::new(&doc.get().window, ~[])
+    fn GetElementsByClassName(&self, classes: DOMString) -> Temporary<HTMLCollection> {
+        let window = window_from_node(self).root();
+        HTMLCollection::by_class_name(&*window, NodeCast::from_ref(self), classes)
     }
 
-    // http://dom.spec.whatwg.org/#dom-element-matches
-    pub fn MozMatchesSelector(&self, _selector: DOMString) -> Fallible<bool> {
-        // FIXME: stub - https://github.com/mozilla/servo/issues/1660
-        Ok(false)
+    // http://dev.w3.org/csswg/cssom-view/#dom-element-getclientrects
+    fn GetClientRects(&self) -> Temporary<ClientRectList> {
+        let win = window_from_node(self).root();
+        let node: &JSRef<Node> = NodeCast::from_ref(self);
+        let rects = node.get_content_boxes();
+        let rects: Vec<Root<ClientRect>> = rects.iter().map(|r| {
+            ClientRect::new(
+                &*win,
+                r.origin.y,
+                r.origin.y + r.size.height,
+                r.origin.x,
+                r.origin.x + r.size.width).root()
+        }).collect();
+
+        ClientRectList::new(&*win, rects.iter().map(|rect| rect.deref().clone()).collect())
     }
 
-    pub fn SetCapture(&self, _retargetToElement: bool) {
+    // http://dev.w3.org/csswg/cssom-view/#dom-element-getboundingclientrect
+    fn GetBoundingClientRect(&self) -> Temporary<ClientRect> {
+        let win = window_from_node(self).root();
+        let node: &JSRef<Node> = NodeCast::from_ref(self);
+        let rect = node.get_bounding_content_box();
+        ClientRect::new(
+            &*win,
+            rect.origin.y,
+            rect.origin.y + rect.size.height,
+            rect.origin.x,
+            rect.origin.x + rect.size.width)
     }
 
-    pub fn ReleaseCapture(&self) {
-    }
-
-    pub fn MozRequestFullScreen(&self) {
-    }
-
-    pub fn MozRequestPointerLock(&self) {
-    }
-
-    pub fn GetClientRects(&self, abstract_self: &JS<Element>) -> JS<ClientRectList> {
-        let doc = self.node.owner_doc();
-        let win = &doc.get().window;
-        let node: JS<Node> = NodeCast::from(abstract_self);
-        let (port, chan) = Chan::new();
-        let addr = node.to_trusted_node_address();
-        let rects =
-            match win.get().page.query_layout(ContentBoxesQuery(addr, chan), port) {
-                ContentBoxesResponse(rects) => {
-                    rects.map(|r| {
-                        ClientRect::new(
-                            win,
-                            r.origin.y,
-                            r.origin.y + r.size.height,
-                            r.origin.x,
-                            r.origin.x + r.size.width)
-                    })
-                },
-            };
-
-        ClientRectList::new(win, rects)
-    }
-
-    pub fn GetBoundingClientRect(&self, abstract_self: &JS<Element>) -> JS<ClientRect> {
-        let doc = self.node.owner_doc();
-        let win = &doc.get().window;
-        let node: JS<Node> = NodeCast::from(abstract_self);
-        let (port, chan) = Chan::new();
-        let addr = node.to_trusted_node_address();
-        match win.get().page.query_layout(ContentBoxQuery(addr, chan), port) {
-            ContentBoxResponse(rect) => {
-                ClientRect::new(
-                    win,
-                    rect.origin.y,
-                    rect.origin.y + rect.size.height,
-                    rect.origin.x,
-                    rect.origin.x + rect.size.width)
-            }
-        }
-    }
-
-    pub fn ScrollIntoView(&self, _top: bool) {
-    }
-
-    pub fn ScrollTop(&self) -> i32 {
-        0
-    }
-
-    pub fn SetScrollTop(&mut self, _scroll_top: i32) {
-    }
-
-    pub fn ScrollLeft(&self) -> i32 {
-        0
-    }
-
-    pub fn SetScrollLeft(&mut self, _scroll_left: i32) {
-    }
-
-    pub fn ScrollWidth(&self) -> i32 {
-        0
-    }
-
-    pub fn ScrollHeight(&self) -> i32 {
-        0
-    }
-
-    pub fn ClientTop(&self) -> i32 {
-        0
-    }
-
-    pub fn ClientLeft(&self) -> i32 {
-        0
-    }
-
-    pub fn ClientWidth(&self) -> i32 {
-        0
-    }
-
-    pub fn ClientHeight(&self) -> i32 {
-        0
-    }
-
-    pub fn GetInnerHTML(&self, abstract_self: &JS<Element>) -> Fallible<DOMString> {
+    fn GetInnerHTML(&self) -> Fallible<DOMString> {
         //XXX TODO: XML case
-        Ok(serialize(&mut NodeIterator::new(NodeCast::from(abstract_self), false, false)))
+        Ok(serialize(&mut NodeIterator::new(NodeCast::from_ref(self), false, false)))
     }
 
-    pub fn SetInnerHTML(&mut self, _abstract_self: &JS<Element>, _value: DOMString) -> ErrorResult {
-        Ok(())
+    fn GetOuterHTML(&self) -> Fallible<DOMString> {
+        Ok(serialize(&mut NodeIterator::new(NodeCast::from_ref(self), true, false)))
     }
 
-    pub fn GetOuterHTML(&self, abstract_self: &JS<Element>) -> Fallible<DOMString> {
-        Ok(serialize(&mut NodeIterator::new(NodeCast::from(abstract_self), true, false)))
+    fn Children(&self) -> Temporary<HTMLCollection> {
+        let window = window_from_node(self).root();
+        HTMLCollection::children(&*window, NodeCast::from_ref(self))
     }
 
-    pub fn SetOuterHTML(&mut self, _abstract_self: &JS<Element>, _value: DOMString) -> ErrorResult {
-        Ok(())
-    }
-
-    pub fn InsertAdjacentHTML(&mut self, _position: DOMString, _text: DOMString) -> ErrorResult {
-        Ok(())
-    }
-
-    pub fn QuerySelector(&self, _selectors: DOMString) -> Fallible<Option<JS<Element>>> {
-        Ok(None)
+    // http://dom.spec.whatwg.org/#dom-childnode-remove
+    fn Remove(&mut self) {
+        let node: &mut JSRef<Node> = NodeCast::from_mut_ref(self);
+        node.remove_self();
     }
 }
 
-fn get_attribute_parts(name: DOMString) -> (Option<~str>, ~str) {
+pub fn get_attribute_parts(name: DOMString) -> (Option<~str>, ~str) {
     //FIXME: Throw for XML-invalid names
     //FIXME: Throw for XMLNS-invalid names
     let (prefix, local_name) = if name.contains(":")  {
-        let parts: ~[&str] = name.splitn(':', 1).collect();
-        (Some(parts[0].to_owned()), parts[1].to_owned())
+        let mut parts = name.splitn(':', 1);
+        (Some(parts.next().unwrap().to_owned()), parts.next().unwrap().to_owned())
     } else {
         (None, name)
     };
 
     (prefix, local_name)
+}
+
+impl<'a> VirtualMethods for JSRef<'a, Element> {
+    fn super_type<'a>(&'a mut self) -> Option<&'a mut VirtualMethods:> {
+        let node: &mut JSRef<Node> = NodeCast::from_mut_ref(self);
+        Some(node as &mut VirtualMethods:)
+    }
+
+    fn after_set_attr(&mut self, name: DOMString, value: DOMString) {
+        match self.super_type() {
+            Some(ref mut s) => s.after_set_attr(name.clone(), value.clone()),
+            _ => (),
+        }
+
+        match name.as_slice() {
+            "style" => {
+                let doc = document_from_node(self).root();
+                let base_url = doc.deref().url().clone();
+                self.deref_mut().style_attribute = Some(style::parse_style_attribute(value, &base_url))
+            }
+            "id" => {
+                let node: &JSRef<Node> = NodeCast::from_ref(self);
+                if node.is_in_doc() {
+                    let mut doc = document_from_node(self).root();
+                    doc.register_named_element(self, value.clone());
+                }
+            }
+            _ => ()
+        }
+
+        self.notify_attribute_changed(name);
+    }
+
+    fn before_remove_attr(&mut self, name: DOMString, value: DOMString) {
+        match self.super_type() {
+            Some(ref mut s) => s.before_remove_attr(name.clone(), value.clone()),
+            _ => (),
+        }
+
+        match name.as_slice() {
+            "style" => {
+                self.deref_mut().style_attribute = None
+            }
+            "id" => {
+                let node: &JSRef<Node> = NodeCast::from_ref(self);
+                if node.is_in_doc() {
+                    let mut doc = document_from_node(self).root();
+                    doc.unregister_named_element(self, value);
+                }
+            }
+            _ => ()
+        }
+
+        self.notify_attribute_changed(name);
+    }
+
+    fn bind_to_tree(&mut self) {
+        match self.super_type() {
+            Some(ref mut s) => s.bind_to_tree(),
+            _ => (),
+        }
+
+        match self.get_attribute(Null, "id").root() {
+            Some(attr) => {
+                let mut doc = document_from_node(self).root();
+                doc.register_named_element(self, attr.deref().Value());
+            }
+            _ => ()
+        }
+    }
+
+    fn unbind_from_tree(&mut self) {
+        match self.super_type() {
+            Some(ref mut s) => s.unbind_from_tree(),
+            _ => (),
+        }
+
+        match self.get_attribute(Null, "id").root() {
+            Some(attr) => {
+                let mut doc = document_from_node(self).root();
+                doc.unregister_named_element(self, attr.deref().Value());
+            }
+            _ => ()
+        }
+    }
 }

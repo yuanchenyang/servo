@@ -10,10 +10,10 @@
 [NamedPropertiesObject]
 /*sealed*/ interface Window : EventTarget {
   // the current browsing context
-  /*[Unforgeable] readonly attribute WindowProxy window;
-    [Replaceable] readonly attribute WindowProxy self;*/
+  [Unforgeable] readonly attribute Window window;
+  [Replaceable] readonly attribute Window self;
   [Unforgeable] readonly attribute Document document;
-           attribute DOMString name; 
+           attribute DOMString name;
   /* [PutForwards=href, Unforgeable] */ readonly attribute Location location;
   /* readonly attribute History history;
   [Replaceable] readonly attribute BarProp locationbar;
@@ -30,14 +30,14 @@
   void blur();
 
   // other browsing contexts
-  /*[Replaceable] readonly attribute WindowProxy frames;
+  /*[Replaceable] readonly attribute Window frames;
   [Replaceable] readonly attribute unsigned long length;
-  [Unforgeable] readonly attribute WindowProxy top;
-           attribute WindowProxy? opener;
-           readonly attribute WindowProxy parent;*/
+  [Unforgeable] readonly attribute Window top;
+           attribute Window? opener;
+           readonly attribute Window parent;*/
   readonly attribute Element? frameElement;
-  /*WindowProxy open(optional DOMString url = "about:blank", optional DOMString target = "_blank", optional DOMString features = "", optional boolean replace = false);
-    getter WindowProxy (unsigned long index);*/
+  /*Window open(optional DOMString url = "about:blank", optional DOMString target = "_blank", optional DOMString features = "", optional boolean replace = false);
+    getter Window (unsigned long index);*/
   //getter object (DOMString name);
 
   // the user agent
@@ -56,6 +56,11 @@
 
 };
 
+// https://dvcs.w3.org/hg/webperf/raw-file/tip/specs/HighResolutionTime/Overview.html
+partial interface Window {
+  [Replaceable] readonly attribute Performance performance;
+};
+
 // Not part of any spec
 partial interface Window {
   // web developer niceties
@@ -67,13 +72,24 @@ partial interface Window {
 
 [NoInterfaceObject]
 interface WindowTimers {
-  //long setTimeout(Function handler, optional long timeout, any... arguments);
+  //long setTimeout(Function handler, optional long timeout = 0, any... arguments);
   //XXXjdm No support for Function or variadic arguments yet
-  long setTimeout(any handler, optional long timeout/*, any... arguments*/);
-  void clearTimeout(long handle);
-  /*long setTimeout(DOMString handler, optional long timeout, any... arguments);
-  long setInterval(Function handler, optional long timeout, any... arguments);
-  long setInterval(DOMString handler, optional long timeout, any... arguments);
-  void clearInterval(long handle);*/
+  long setTimeout(any handler, optional long timeout = 0/*, any... arguments*/);
+  void clearTimeout(optional long handle = 0);
+  long setInterval(any handler, optional long timeout = 0/*, any... arguments*/);
+  void clearInterval(optional long handler = 0);
+  /*long setTimeout(DOMString handler, optional long timeout = 0, any... arguments);
+  long setInterval(Function handler, optional long timeout = 0, any... arguments);
+  long setInterval(DOMString handler, optional long timeout = 0, any... arguments);
+  void clearInterval(optional long handle = 0);*/
 };
 Window implements WindowTimers;
+Window implements GlobalEventHandlers;
+Window implements WindowEventHandlers;
+Window implements OnErrorEventHandlerForWindow;
+
+// Proprietary extensions.
+partial interface Window {
+  void debug(DOMString arg);
+  void gc();
+};

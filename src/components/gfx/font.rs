@@ -5,9 +5,9 @@
 use azure::{AzFloat, AzScaledFontRef};
 use azure::azure_hl::{BackendType, ColorPattern};
 use azure::scaled_font::ScaledFont;
-use extra::arc::Arc;
 use geom::{Point2D, Rect, Size2D};
 use std::cast;
+use std::num::Zero;
 use std::ptr;
 use std::str;
 use std::rc::Rc;
@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use servo_util::cache::{Cache, HashCache};
 use servo_util::range::Range;
 use style::computed_values::{text_decoration, font_weight, font_style};
+use sync::Arc;
 
 use color::Color;
 use font_context::FontContext;
@@ -22,7 +23,7 @@ use servo_util::geometry::Au;
 use platform::font_context::FontContextHandle;
 use platform::font::{FontHandle, FontTable};
 use render_context::RenderContext;
-use text::glyph::{GlyphStore, GlyphIndex};
+use text::glyph::{CharIndex, GlyphStore, GlyphId};
 use text::shaping::ShaperMethods;
 use text::{Shaper, TextRun};
 
@@ -32,7 +33,7 @@ use text::{Shaper, TextRun};
 // resources needed by the graphics layer to draw glyphs.
 
 pub trait FontHandleMethods {
-    fn new_from_buffer(fctx: &FontContextHandle, buf: ~[u8], style: &SpecifiedFontStyle)
+    fn new_from_buffer(fctx: &FontContextHandle, buf: Vec<u8>, style: &SpecifiedFontStyle)
                     -> Result<Self,()>;
 
     // an identifier usable by FontContextHandle to recreate this FontHandle.
@@ -44,8 +45,8 @@ pub trait FontHandleMethods {
 
     fn clone_with_style(&self, fctx: &FontContextHandle, style: &UsedFontStyle)
                      -> Result<FontHandle, ()>;
-    fn glyph_index(&self, codepoint: char) -> Option<GlyphIndex>;
-    fn glyph_h_advance(&self, GlyphIndex) -> Option<FractionalPixel>;
+    fn glyph_index(&self, codepoint: char) -> Option<GlyphId>;
+    fn glyph_h_advance(&self, GlyphId) -> Option<FractionalPixel>;
     fn get_metrics(&self) -> FontMetrics;
     fn get_table_for_tag(&self, FontTableTag) -> Option<FontTable>;
 }
@@ -77,16 +78,16 @@ pub trait FontTableMethods {
 
 #[deriving(Clone)]
 pub struct FontMetrics {
-    underline_size:   Au,
-    underline_offset: Au,
-    strikeout_size:   Au,
-    strikeout_offset: Au,
-    leading:          Au,
-    x_height:         Au,
-    em_size:          Au,
-    ascent:           Au,
-    descent:          Au,
-    max_advance:      Au
+    pub underline_size:   Au,
+    pub underline_offset: Au,
+    pub strikeout_size:   Au,
+    pub strikeout_offset: Au,
+    pub leading:          Au,
+    pub x_height:         Au,
+    pub em_size:          Au,
+    pub ascent:           Au,
+    pub descent:          Au,
+    pub max_advance:      Au
 }
 
 // TODO(Issue #179): eventually this will be split into the specified
@@ -97,10 +98,10 @@ pub struct FontMetrics {
 // For now, the cases are differentiated with a typedef
 #[deriving(Clone, Eq)]
 pub struct FontStyle {
-    pt_size: f64,
-    weight: font_weight::T,
-    style: font_style::T,
-    families: ~[~str],
+    pub pt_size: f64,
+    pub weight: font_weight::T,
+    pub style: font_style::T,
+    pub families: Vec<~str>,
     // TODO(Issue #198): font-stretch, text-decoration, font-variant, size-adjust
 }
 
@@ -115,8 +116,8 @@ pub type UsedFontStyle = FontStyle;
 // and render tasks.
 #[deriving(Clone, Eq)]
 pub struct FontDescriptor {
-    style: UsedFontStyle,
-    selector: FontSelector,
+    pub style: UsedFontStyle,
+    pub selector: FontSelector,
 }
 
 impl FontDescriptor {
@@ -142,15 +143,15 @@ pub enum FontSelector {
 // The ordering of font instances is mainly decided by the CSS
 // 'font-family' property. The last font is a system fallback font.
 pub struct FontGroup {
-    families: ~[~str],
+    pub families: Vec<~str>,
     // style of the first western font in group, which is
     // used for purposes of calculating text run metrics.
-    style: UsedFontStyle,
-    fonts: ~[Rc<RefCell<Font>>]
+    pub style: UsedFontStyle,
+    pub fonts: Vec<Rc<RefCell<Font>>>
 }
 
 impl FontGroup {
-    pub fn new(families: ~[~str], style: &UsedFontStyle, fonts: ~[Rc<RefCell<Font>>]) -> FontGroup {
+    pub fn new(families: Vec<~str>, style: &UsedFontStyle, fonts: Vec<Rc<RefCell<Font>>>) -> FontGroup {
         FontGroup {
             families: families,
             style: (*style).clone(),
@@ -158,28 +159,22 @@ impl FontGroup {
         }
     }
 
-    pub fn teardown(&mut self) {
-        self.fonts = ~[];
-    }
-
     pub fn create_textrun(&self, text: ~str, decoration: text_decoration::T) -> TextRun {
         assert!(self.fonts.len() > 0);
 
         // TODO(Issue #177): Actually fall back through the FontGroup when a font is unsuitable.
-        self.fonts[0].borrow().with_mut(|font| {
-            TextRun::new(font, text.clone(), decoration)
-        })
+        TextRun::new(&mut *self.fonts.get(0).borrow_mut(), text.clone(), decoration)
     }
 }
 
 pub struct RunMetrics {
     // may be negative due to negative width (i.e., kerning of '.' in 'P.T.')
-    advance_width: Au,
-    ascent: Au, // nonzero
-    descent: Au, // nonzero
+    pub advance_width: Au,
+    pub ascent: Au, // nonzero
+    pub descent: Au, // nonzero
     // this bounding box is relative to the left origin baseline.
     // so, bounding_box.position.y = -ascent
-    bounding_box: Rect<Au>
+    pub bounding_box: Rect<Au>
 }
 
 impl RunMetrics {
@@ -205,32 +200,31 @@ A font instance. Layout can use this to calculate glyph metrics
 and the renderer can use it to render text.
 */
 pub struct Font {
-    priv handle: FontHandle,
-    priv azure_font: Option<ScaledFont>,
-    priv shaper: Option<Shaper>,
-    style: UsedFontStyle,
-    metrics: FontMetrics,
-    backend: BackendType,
-    shape_cache: HashCache<~str, Arc<GlyphStore>>,
-    glyph_advance_cache: HashCache<u32, FractionalPixel>,
+    pub handle: FontHandle,
+    pub azure_font: Option<ScaledFont>,
+    pub shaper: Option<Shaper>,
+    pub style: UsedFontStyle,
+    pub metrics: FontMetrics,
+    pub backend: BackendType,
+    pub shape_cache: HashCache<~str, Arc<GlyphStore>>,
+    pub glyph_advance_cache: HashCache<u32, FractionalPixel>,
 }
 
 impl<'a> Font {
     pub fn new_from_buffer(ctx: &FontContext,
-                       buffer: ~[u8],
-                       style: &SpecifiedFontStyle,
-                       backend: BackendType)
+                           buffer: Vec<u8>,
+                           style: &SpecifiedFontStyle,
+                           backend: BackendType)
             -> Result<Rc<RefCell<Font>>, ()> {
         let handle = FontHandleMethods::new_from_buffer(&ctx.handle, buffer, style);
-        let handle: FontHandle = if handle.is_ok() {
-            handle.unwrap()
-        } else {
-            return Err(handle.unwrap_err());
+        let handle: FontHandle = match handle {
+            Ok(handle) => handle,
+            Err(()) => return Err(()),
         };
 
         let metrics = handle.get_metrics();
 
-        return Ok(Rc::from_mut(RefCell::new(Font {
+        return Ok(Rc::new(RefCell::new(Font {
             handle: handle,
             azure_font: None,
             shaper: None,
@@ -269,15 +263,15 @@ impl<'a> Font {
             Err(()) => return Err(())
         };
 
-        return Ok(Rc::from_mut(RefCell::new(Font::new_from_adopted_handle(fctx, styled_handle, style, backend))));
+        return Ok(Rc::new(RefCell::new(Font::new_from_adopted_handle(fctx, styled_handle, style, backend))));
     }
 
     fn make_shaper(&'a mut self) -> &'a Shaper {
         // fast path: already created a shaper
         match self.shaper {
-            Some(ref shaper) => { 
+            Some(ref shaper) => {
                 let s: &'a Shaper = shaper;
-                return s; 
+                return s;
             },
             None => {}
         }
@@ -296,11 +290,6 @@ impl<'a> Font {
                self.handle.family_name(), self.handle.face_name());
 
         return result;
-    }
-
-    pub fn teardown(&mut self) {
-        self.shaper = None;
-        self.azure_font = None;
     }
 
     // TODO: this should return a borrowed pointer, but I can't figure
@@ -339,11 +328,11 @@ impl<'a> Font {
 impl Font {
     pub fn draw_text_into_context(&mut self,
                               rctx: &RenderContext,
-                              run: &~TextRun,
-                              range: &Range,
+                              run: &Box<TextRun>,
+                              range: &Range<CharIndex>,
                               baseline_origin: Point2D<Au>,
                               color: Color) {
-        use std::libc::types::common::c99::{uint16_t, uint32_t};
+        use libc::types::common::c99::{uint16_t, uint32_t};
         use azure::{struct__AzDrawOptions,
                     struct__AzGlyph,
                     struct__AzGlyphBuffer,
@@ -362,16 +351,16 @@ impl Font {
         };
 
         let mut origin = baseline_origin.clone();
-        let mut azglyphs = ~[];
-        azglyphs.reserve(range.length());
+        let mut azglyphs = vec!();
+        azglyphs.reserve(range.length().to_uint());
 
         for (glyphs, _offset, slice_range) in run.iter_slices_for_range(range) {
             for (_i, glyph) in glyphs.iter_glyphs_for_char_range(&slice_range) {
                 let glyph_advance = glyph.advance();
-                let glyph_offset = glyph.offset().unwrap_or(Au::zero_point());
+                let glyph_offset = glyph.offset().unwrap_or(Zero::zero());
 
                 let azglyph = struct__AzGlyph {
-                    mIndex: glyph.index() as uint32_t,
+                    mIndex: glyph.id() as uint32_t,
                     mPosition: struct__AzPoint {
                         x: (origin.x + glyph_offset.x).to_nearest_px() as AzFloat,
                         y: (origin.y + glyph_offset.y).to_nearest_px() as AzFloat
@@ -387,21 +376,21 @@ impl Font {
 
         let glyphbuf = struct__AzGlyphBuffer {
             mGlyphs: azglyphs.as_ptr(),
-            mNumGlyphs: azglyph_buf_len as uint32_t            
+            mNumGlyphs: azglyph_buf_len as uint32_t
         };
 
         unsafe {
             // TODO(Issue #64): this call needs to move into azure_hl.rs
             AzDrawTargetFillGlyphs(target.azure_draw_target,
                                    azfontref,
-                                   ptr::to_unsafe_ptr(&glyphbuf),
+                                   &glyphbuf,
                                    azure_pattern,
-                                   ptr::to_unsafe_ptr(&options),
+                                   &options,
                                    ptr::null());
         }
     }
 
-    pub fn measure_text(&self, run: &TextRun, range: &Range) -> RunMetrics {
+    pub fn measure_text(&self, run: &TextRun, range: &Range<CharIndex>) -> RunMetrics {
         // TODO(Issue #199): alter advance direction for RTL
         // TODO(Issue #98): using inter-char and inter-word spacing settings  when measuring text
         let mut advance = Au(0);
@@ -415,7 +404,7 @@ impl Font {
 
     pub fn measure_text_for_slice(&self,
                                   glyphs: &GlyphStore,
-                                  slice_range: &Range)
+                                  slice_range: &Range<CharIndex>)
                                   -> RunMetrics {
         let mut advance = Au(0);
         for (_i, glyph) in glyphs.iter_glyphs_for_char_range(slice_range) {
@@ -428,9 +417,10 @@ impl Font {
 
         //FIXME (ksh8281)
         self.make_shaper();
+        let shaper = &self.shaper;
         self.shape_cache.find_or_create(&text, |txt| {
-            let mut glyphs = GlyphStore::new(text.char_len(), is_whitespace);
-            self.shaper.get_ref().shape_text(*txt, &mut glyphs);
+            let mut glyphs = GlyphStore::new(text.char_len() as int, is_whitespace);
+            shaper.get_ref().shape_text(*txt, &mut glyphs);
             Arc::new(glyphs)
         })
     }
@@ -439,13 +429,14 @@ impl Font {
         FontDescriptor::new(self.style.clone(), SelectorPlatformIdentifier(self.handle.face_identifier()))
     }
 
-    pub fn glyph_index(&self, codepoint: char) -> Option<GlyphIndex> {
+    pub fn glyph_index(&self, codepoint: char) -> Option<GlyphId> {
         self.handle.glyph_index(codepoint)
     }
 
-    pub fn glyph_h_advance(&mut self, glyph: GlyphIndex) -> FractionalPixel {
+    pub fn glyph_h_advance(&mut self, glyph: GlyphId) -> FractionalPixel {
+        let handle = &self.handle;
         self.glyph_advance_cache.find_or_create(&glyph, |glyph| {
-            match self.handle.glyph_h_advance(*glyph) {
+            match handle.glyph_h_advance(*glyph) {
                 Some(adv) => adv,
                 None => /* FIXME: Need fallback strategy */ 10f64 as FractionalPixel
             }
@@ -453,72 +444,3 @@ impl Font {
     }
 }
 
-/*fn should_destruct_on_fail_without_leaking() {
-    #[test];
-    #[should_fail];
-
-    let fctx = @FontContext();
-    let matcher = @FontMatcher(fctx);
-    let _font = matcher.get_test_font();
-    fail;
-}
-
-fn should_get_glyph_indexes() {
-    #[test];
-
-    let fctx = @FontContext();
-    let matcher = @FontMatcher(fctx);
-    let font = matcher.get_test_font();
-    let glyph_idx = font.glyph_index('w');
-    assert!(glyph_idx == Some(40u as GlyphIndex));
-}
-
-fn should_get_glyph_advance() {
-    #[test];
-    #[ignore];
-
-    let fctx = @FontContext();
-    let matcher = @FontMatcher(fctx);
-    let font = matcher.get_test_font();
-    let x = font.glyph_h_advance(40u as GlyphIndex);
-    assert!(x == 15f || x == 16f);
-}
-
-// Testing thread safety
-fn should_get_glyph_advance_stress() {
-    #[test];
-    #[ignore];
-
-    let mut ports = ~[];
-
-    for iter::repeat(100) {
-        let (chan, port) = pipes::stream();
-        ports += [@port];
-        spawn_named("should_get_glyph_advance_stress") {
-            let fctx = @FontContext();
-            let matcher = @FontMatcher(fctx);
-            let _font = matcher.get_test_font();
-            let x = font.glyph_h_advance(40u as GlyphIndex);
-            assert!(x == 15f || x == 16f);
-            chan.send(());
-        }
-    }
-
-    for ports.each |port| {
-        port.recv();
-    }
-}
-
-fn should_be_able_to_create_instances_in_multiple_threads() {
-    #[test];
-
-    for iter::repeat(10u) {
-        do task::spawn {
-            let fctx = @FontContext();
-            let matcher = @FontMatcher(fctx);
-            let _font = matcher.get_test_font();
-        }
-    }
-}
-
-*/

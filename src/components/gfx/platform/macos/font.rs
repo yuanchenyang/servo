@@ -4,9 +4,9 @@
 
 /// Implementation of Quartz (CoreGraphics) fonts.
 
-extern mod core_foundation;
-extern mod core_graphics;
-extern mod core_text;
+extern crate core_foundation;
+extern crate core_graphics;
+extern crate core_text;
 
 use font::{FontHandleMethods, FontMetrics, FontTableMethods};
 use font::FontTableTag;
@@ -14,7 +14,7 @@ use font::{FractionalPixel, SpecifiedFontStyle};
 use servo_util::geometry::{Au, px_to_pt};
 use servo_util::geometry;
 use platform::macos::font_context::FontContextHandle;
-use text::glyph::GlyphIndex;
+use text::glyph::GlyphId;
 use style::computed_values::font_weight;
 
 use core_foundation::base::CFIndex;
@@ -52,8 +52,8 @@ impl FontTableMethods for FontTable {
 }
 
 pub struct FontHandle {
-    priv cgfont: Option<CGFont>,
-    ctfont: CTFont,
+    cgfont: Option<CGFont>,
+    pub ctfont: CTFont,
 }
 
 impl FontHandle {
@@ -77,9 +77,9 @@ impl FontHandle {
 }
 
 impl FontHandleMethods for FontHandle {
-    fn new_from_buffer(_: &FontContextHandle, buf: ~[u8], style: &SpecifiedFontStyle)
+    fn new_from_buffer(_: &FontContextHandle, buf: Vec<u8>, style: &SpecifiedFontStyle)
                     -> Result<FontHandle, ()> {
-        let fontprov = CGDataProvider::from_buffer(buf);
+        let fontprov = CGDataProvider::from_buffer(buf.as_slice());
         let cgfont = CGFont::from_data_provider(fontprov);
         let ctfont = core_text::font::new_from_CGFont(&cgfont, style.pt_size);
 
@@ -94,7 +94,7 @@ impl FontHandleMethods for FontHandle {
     fn family_name(&self) -> ~str {
         self.ctfont.family_name()
     }
-    
+
     fn face_name(&self) -> ~str {
         self.ctfont.face_name()
     }
@@ -125,13 +125,13 @@ impl FontHandleMethods for FontHandle {
         return FontHandle::new_from_CTFont(fctx, new_font);
     }
 
-    fn glyph_index(&self, codepoint: char) -> Option<GlyphIndex> {
+    fn glyph_index(&self, codepoint: char) -> Option<GlyphId> {
         let characters: [UniChar,  ..1] = [codepoint as UniChar];
         let glyphs: [CGGlyph, ..1] = [0 as CGGlyph];
         let count: CFIndex = 1;
 
-        let result = self.ctfont.get_glyphs_for_characters(ptr::to_unsafe_ptr(&characters[0]),
-                                                           ptr::to_unsafe_ptr(&glyphs[0]),
+        let result = self.ctfont.get_glyphs_for_characters(&characters[0],
+                                                           &glyphs[0],
                                                            count);
 
         if !result {
@@ -140,10 +140,10 @@ impl FontHandleMethods for FontHandle {
         }
 
         assert!(glyphs[0] != 0); // FIXME: error handling
-        return Some(glyphs[0] as GlyphIndex);
+        return Some(glyphs[0] as GlyphId);
     }
 
-    fn glyph_h_advance(&self, glyph: GlyphIndex) -> Option<FractionalPixel> {
+    fn glyph_h_advance(&self, glyph: GlyphId) -> Option<FractionalPixel> {
         let glyphs = [glyph as CGGlyph];
         let advance = self.ctfont.get_advances_for_glyphs(kCTFontDefaultOrientation,
                                                           &glyphs[0],

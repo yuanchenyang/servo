@@ -4,7 +4,7 @@
 
 use std::iter::Iterator;
 use std::ascii::StrAsciiExt;
-use extra::url::Url;
+use url::Url;
 
 use encoding::EncodingRef;
 
@@ -21,7 +21,7 @@ use media_queries;
 pub struct Stylesheet {
     /// List of rules in the order they were found (important for
     /// cascading order)
-    rules: ~[CSSRule],
+    pub rules: Vec<CSSRule>,
     namespaces: NamespaceMap,
     encoding: EncodingRef,
     base_url: Url,
@@ -35,29 +35,30 @@ pub enum CSSRule {
 
 
 pub struct StyleRule {
-    selectors: ~[selectors::Selector],
-    declarations: properties::PropertyDeclarationBlock,
+    pub selectors: Vec<selectors::Selector>,
+    pub declarations: properties::PropertyDeclarationBlock,
 }
 
 
 impl Stylesheet {
-    pub fn from_bytes_iter<I: Iterator<~[u8]>>(
+    pub fn from_bytes_iter<I: Iterator<Vec<u8>>>(
             mut input: I, base_url: Url, protocol_encoding_label: Option<&str>,
             environment_encoding: Option<EncodingRef>) -> Stylesheet {
-        let mut bytes = ~[];
+        let mut bytes = vec!();
         // TODO: incremental decoding and tokinization/parsing
         for chunk in input {
-            bytes.push_all(chunk)
+            bytes.push_all(chunk.as_slice())
         }
-        Stylesheet::from_bytes(bytes, base_url, protocol_encoding_label, environment_encoding)
+        Stylesheet::from_bytes(bytes.as_slice(), base_url, protocol_encoding_label, environment_encoding)
     }
 
     pub fn from_bytes(
             bytes: &[u8], base_url: Url, protocol_encoding_label: Option<&str>,
             environment_encoding: Option<EncodingRef>) -> Stylesheet {
+        // TODO: bytes.as_slice could be bytes.container_as_bytes()
         let (string, used_encoding) = decode_stylesheet_bytes(
-            bytes, protocol_encoding_label, environment_encoding);
-        Stylesheet::from_str(string, base_url, used_encoding)
+            bytes.as_slice(), protocol_encoding_label, environment_encoding);
+        Stylesheet::from_str(string.as_slice(), base_url, used_encoding)
     }
 
     pub fn from_str(css: &str, base_url: Url, encoding: EncodingRef) -> Stylesheet {
@@ -67,7 +68,7 @@ impl Stylesheet {
         static STATE_BODY: uint = 4;
         let mut state: uint = STATE_CHARSET;
 
-        let mut rules = ~[];
+        let mut rules = vec!();
         let mut namespaces = NamespaceMap::new();
 
         for rule in ErrorLoggerIterator(parse_stylesheet_rules(tokenize(css))) {
@@ -78,7 +79,7 @@ impl Stylesheet {
                     parse_style_rule(rule, &mut rules, &namespaces, &base_url)
                 },
                 AtRule(rule) => {
-                    let lower_name = rule.name.to_ascii_lower();
+                    let lower_name = rule.name.as_slice().to_ascii_lower();
                     match lower_name.as_slice() {
                         "charset" => {
                             if state > STATE_CHARSET {
@@ -124,7 +125,7 @@ impl Stylesheet {
 }
 
 
-pub fn parse_style_rule(rule: QualifiedRule, parent_rules: &mut ~[CSSRule],
+pub fn parse_style_rule(rule: QualifiedRule, parent_rules: &mut Vec<CSSRule>,
                         namespaces: &NamespaceMap, base_url: &Url) {
     let QualifiedRule{location: location, prelude: prelude, block: block} = rule;
     // FIXME: avoid doing this for valid selectors
@@ -142,7 +143,7 @@ pub fn parse_style_rule(rule: QualifiedRule, parent_rules: &mut ~[CSSRule],
 
 // lower_name is passed explicitly to avoid computing it twice.
 pub fn parse_nested_at_rule(lower_name: &str, rule: AtRule,
-                            parent_rules: &mut ~[CSSRule], namespaces: &NamespaceMap, base_url: &Url) {
+                            parent_rules: &mut Vec<CSSRule>, namespaces: &NamespaceMap, base_url: &Url) {
     match lower_name {
         "media" => parse_media_rule(rule, parent_rules, namespaces, base_url),
         _ => log_css_error(rule.location, format!("Unsupported at-rule: @{:s}", lower_name))

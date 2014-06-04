@@ -4,117 +4,61 @@
 
 use dom::bindings::codegen::PrototypeList;
 use dom::bindings::codegen::PrototypeList::MAX_PROTO_CHAIN_LENGTH;
-use dom::bindings::js::JS;
+use dom::bindings::conversions::{FromJSValConvertible, IDLInterface};
+use dom::bindings::js::{JS, JSRef, Temporary, Root};
+use dom::bindings::trace::Untraceable;
+use dom::browsercontext;
 use dom::window;
 use servo_util::str::DOMString;
 
-use std::libc::c_uint;
+use collections::hashmap::HashMap;
+use libc;
+use libc::c_uint;
 use std::cast;
 use std::cmp::Eq;
-use std::hashmap::HashMap;
-use std::libc;
 use std::ptr;
 use std::ptr::null;
+use std::slice;
 use std::str;
-use std::vec;
-use std::unstable::raw::Box;
-use js::glue::*;
-use js::glue::{DefineFunctionWithReserved, GetObjectJSClass, RUST_OBJECT_TO_JSVAL};
 use js::glue::{js_IsObjectProxyClass, js_IsFunctionProxyClass, IsProxyHandlerFamily};
-use js::glue::{ReportError};
-use js::jsapi::{JS_AlreadyHasOwnProperty, JS_NewObject, JS_NewFunction};
-use js::jsapi::{JS_DefineProperties, JS_WrapValue, JS_ForwardGetPropertyTo};
+use js::glue::{GetGlobalForObjectCrossCompartment, UnwrapObject, GetProxyHandlerExtra};
+use js::glue::{IsWrapper, RUST_JSID_TO_STRING, RUST_JSID_IS_INT, RUST_INTERNED_STRING_TO_JSID};
+use js::glue::{RUST_JSID_IS_STRING, RUST_JSID_TO_INT};
+use js::jsapi::{JS_AlreadyHasOwnProperty, JS_NewFunction};
+use js::jsapi::{JS_DefineProperties, JS_ForwardGetPropertyTo};
 use js::jsapi::{JS_GetClass, JS_LinkConstructorAndPrototype, JS_GetStringCharsAndLength};
-use js::jsapi::{JS_ObjectIsRegExp, JS_ObjectIsDate};
-use js::jsapi::{JS_GetFunctionPrototype, JS_InternString, JS_GetFunctionObject};
-use js::jsapi::{JS_HasPropertyById, JS_GetPrototype, JS_GetGlobalForObject};
-use js::jsapi::{JS_NewUCStringCopyN, JS_DefineFunctions, JS_DefineProperty};
+use js::jsapi::{JS_ObjectIsRegExp, JS_ObjectIsDate, JSHandleObject};
+use js::jsapi::{JS_InternString, JS_GetFunctionObject};
+use js::jsapi::{JS_HasPropertyById, JS_GetPrototype};
+use js::jsapi::{JS_GetProperty, JS_HasProperty};
+use js::jsapi::{JS_DefineFunctions, JS_DefineProperty};
 use js::jsapi::{JS_ValueToString, JS_GetReservedSlot, JS_SetReservedSlot};
-use js::jsapi::{JSContext, JSObject, JSBool, jsid, JSClass, JSNative, JSTracer};
-use js::jsapi::{JSFunctionSpec, JSPropertySpec, JSVal, JSPropertyDescriptor};
+use js::jsapi::{JSContext, JSObject, JSBool, jsid, JSClass, JSNative};
+use js::jsapi::{JSFunctionSpec, JSPropertySpec};
 use js::jsapi::{JS_NewGlobalObject, JS_InitStandardClasses};
-use js::jsapi::{JSString, JS_CallTracer, JSTRACE_OBJECT};
-use js::jsapi::{JS_IsExceptionPending, JS_AllowGC, JS_InhibitGC};
+use js::jsapi::{JSString};
+use js::jsfriendapi::JS_ObjectToOuterObject;
 use js::jsfriendapi::bindgen::JS_NewObjectWithUniqueType;
-use js::{JSPROP_ENUMERATE, JSVAL_NULL, JSCLASS_IS_GLOBAL, JSCLASS_IS_DOMJSCLASS};
-use js::{JSPROP_PERMANENT, JSID_VOID, JSPROP_NATIVE_ACCESSORS, JSPROP_GETTER};
-use js::{JSPROP_SETTER, JSVAL_VOID, JSVAL_TRUE, JSVAL_FALSE};
-use js::{JS_THIS_OBJECT, JSFUN_CONSTRUCTOR, JS_CALLEE, JSPROP_READONLY};
+use js::jsval::JSVal;
+use js::jsval::{PrivateValue, ObjectValue, NullValue, ObjectOrNullValue};
+use js::jsval::{Int32Value, UInt32Value, DoubleValue, BooleanValue, UndefinedValue};
+use js::rust::with_compartment;
+use js::{JSPROP_ENUMERATE, JSCLASS_IS_GLOBAL, JSCLASS_IS_DOMJSCLASS};
+use js::JSPROP_PERMANENT;
+use js::{JSFUN_CONSTRUCTOR, JSPROP_READONLY};
 use js;
 
-static TOSTRING_CLASS_RESERVED_SLOT: libc::size_t = 0;
-static TOSTRING_NAME_RESERVED_SLOT: libc::size_t = 1;
-
-mod jsval {
-    use js::glue::{RUST_JSVAL_IS_NULL, RUST_JSVAL_IS_VOID};
-    use js::glue::{RUST_JSVAL_IS_STRING, RUST_JSVAL_TO_STRING};
-    use js::jsapi::{JSVal, JSString};
-
-    pub fn is_null(v: JSVal) -> bool {
-        unsafe { RUST_JSVAL_IS_NULL(v) == 1 }
-    }
-
-    pub fn is_undefined(v: JSVal) -> bool {
-        unsafe { RUST_JSVAL_IS_VOID(v) == 1 }
-    }
-
-    pub fn is_string(v: JSVal) -> bool {
-        unsafe { RUST_JSVAL_IS_STRING(v) == 1 }
-    }
-
-    pub unsafe fn to_string(v: JSVal) -> *JSString {
-        RUST_JSVAL_TO_STRING(v)
-    }
-}
-
+#[deriving(Encodable)]
 pub struct GlobalStaticData {
-    proxy_handlers: HashMap<uint, *libc::c_void>,
-    attribute_ids: HashMap<uint, ~[jsid]>,
-    method_ids: HashMap<uint, ~[jsid]>,
-    constant_ids: HashMap<uint, ~[jsid]>
+    pub proxy_handlers: Untraceable<HashMap<uint, *libc::c_void>>,
+    pub windowproxy_handler: Untraceable<*libc::c_void>,
 }
 
 pub fn GlobalStaticData() -> GlobalStaticData {
     GlobalStaticData {
-        proxy_handlers: HashMap::new(),
-        attribute_ids: HashMap::new(),
-        method_ids: HashMap::new(),
-        constant_ids: HashMap::new()
+        proxy_handlers: Untraceable::new(HashMap::new()),
+        windowproxy_handler: Untraceable::new(browsercontext::new_window_proxy_handler()),
     }
-}
-
-extern fn InterfaceObjectToString(cx: *JSContext, _argc: c_uint, vp: *mut JSVal) -> JSBool {
-  unsafe {
-    let callee = RUST_JSVAL_TO_OBJECT(*JS_CALLEE(cx, cast::transmute(&vp)));
-    let obj = JS_THIS_OBJECT(cx, cast::transmute(&vp));
-    if obj.is_null() {
-        //XXXjdm figure out JSMSG madness
-        /*JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_CANT_CONVERT_TO,
-                             "null", "object");*/
-        return 0;
-    }
-
-    let v = GetFunctionNativeReserved(callee, TOSTRING_CLASS_RESERVED_SLOT);
-    let clasp: *JSClass = cast::transmute(RUST_JSVAL_TO_PRIVATE(*v));
-
-    if GetObjectJSClass(obj) != clasp {
-      /*let jsname: *JSString = RUST_JSVAL_TO_STRING(*v);
-      let length = 0;
-      let name = JS_GetInternedStringCharsAndLength(jsname, &length);*/
-        //XXXjdm figure out JSMSG madness
-        /*JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_INCOMPATIBLE_PROTO,
-                             NS_ConvertUTF16toUTF8(name).get(), "toString",
-                             "object");*/
-        return 0;
-    }
-
-    let v = *GetFunctionNativeReserved(callee, TOSTRING_NAME_RESERVED_SLOT);
-    assert!(jsval::is_string(v));
-    let name = jsstring_to_str(cx, jsval::to_string(v));
-    let retval = ~"function " + name + "() {\n    [native code]\n}";
-    *vp = str_to_jsval(cx, retval);
-    return 1;
-  }
 }
 
 fn is_dom_class(clasp: *JSClass) -> bool {
@@ -123,14 +67,14 @@ fn is_dom_class(clasp: *JSClass) -> bool {
     }
 }
 
-pub fn is_dom_proxy(obj: *JSObject) -> bool {
+pub fn is_dom_proxy(obj: *mut JSObject) -> bool {
     unsafe {
         (js_IsObjectProxyClass(obj) || js_IsFunctionProxyClass(obj)) &&
             IsProxyHandlerFamily(obj)
     }
 }
 
-pub unsafe fn dom_object_slot(obj: *JSObject) -> u32 {
+pub unsafe fn dom_object_slot(obj: *mut JSObject) -> u32 {
     let clasp = JS_GetClass(obj);
     if is_dom_class(clasp) {
         DOM_OBJECT_SLOT as u32
@@ -140,34 +84,54 @@ pub unsafe fn dom_object_slot(obj: *JSObject) -> u32 {
     }
 }
 
-pub unsafe fn unwrap<T>(obj: *JSObject) -> T {
+pub unsafe fn unwrap<T>(obj: *mut JSObject) -> *mut T {
     let slot = dom_object_slot(obj);
     let val = JS_GetReservedSlot(obj, slot);
-    cast::transmute(RUST_JSVAL_TO_PRIVATE(val))
+    val.to_private() as *mut T
 }
 
-pub unsafe fn get_dom_class(obj: *JSObject) -> Result<DOMClass, ()> {
+pub unsafe fn get_dom_class(obj: *mut JSObject) -> Result<DOMClass, ()> {
     let clasp = JS_GetClass(obj);
     if is_dom_class(clasp) {
         debug!("plain old dom object");
-        let domjsclass: *DOMJSClass = cast::transmute(clasp);
+        let domjsclass: *DOMJSClass = clasp as *DOMJSClass;
         return Ok((*domjsclass).dom_class);
     }
     if is_dom_proxy(obj) {
         debug!("proxy dom object");
-        let dom_class: *DOMClass = cast::transmute(GetProxyHandlerExtra(obj));
+        let dom_class: *DOMClass = GetProxyHandlerExtra(obj) as *DOMClass;
         return Ok(*dom_class);
     }
     debug!("not a dom object");
     return Err(());
 }
 
-pub fn unwrap_object<T>(obj: *JSObject, proto_id: PrototypeList::id::ID, proto_depth: uint) -> Result<T, ()> {
+pub fn unwrap_jsmanaged<T: Reflectable>(mut obj: *mut JSObject,
+                                        proto_id: PrototypeList::id::ID,
+                                        proto_depth: uint) -> Result<JS<T>, ()> {
     unsafe {
-        get_dom_class(obj).and_then(|dom_class| {
+        let dom_class = get_dom_class(obj).or_else(|_| {
+            if IsWrapper(obj) == 1 {
+                debug!("found wrapper");
+                obj = UnwrapObject(obj, /* stopAtOuter = */ 0, ptr::null());
+                if obj.is_null() {
+                    debug!("unwrapping security wrapper failed");
+                    Err(())
+                } else {
+                    assert!(IsWrapper(obj) == 0);
+                    debug!("unwrapped successfully");
+                    get_dom_class(obj)
+                }
+            } else {
+                debug!("not a dom wrapper");
+                Err(())
+            }
+        });
+
+        dom_class.and_then(|dom_class| {
             if dom_class.interface_chain[proto_depth] == proto_id {
                 debug!("good prototype");
-                Ok(unwrap(obj))
+                Ok(JS::from_raw(unwrap(obj)))
             } else {
                 debug!("bad prototype");
                 Err(())
@@ -176,99 +140,24 @@ pub fn unwrap_object<T>(obj: *JSObject, proto_id: PrototypeList::id::ID, proto_d
     }
 }
 
-pub fn unwrap_jsmanaged<T: Reflectable>(obj: *JSObject,
-                                        proto_id: PrototypeList::id::ID,
-                                        proto_depth: uint) -> Result<JS<T>, ()> {
-    let result: Result<*mut Box<T>, ()> = unwrap_object(obj, proto_id, proto_depth);
-    result.map(|unwrapped| {
-        unsafe {
-            JS::from_box(unwrapped)
-        }
-    })
-}
-
-pub fn unwrap_value<T>(val: *JSVal, proto_id: PrototypeList::id::ID, proto_depth: uint) -> Result<T, ()> {
-    unsafe {
-        let obj = RUST_JSVAL_TO_OBJECT(*val);
-        unwrap_object(obj, proto_id, proto_depth)
-    }
-}
-
-pub unsafe fn squirrel_away<T>(x: @mut T) -> *Box<T> {
+pub unsafe fn squirrel_away_unique<T>(x: Box<T>) -> *T {
     cast::transmute(x)
 }
 
-pub unsafe fn squirrel_away_unique<T>(x: ~T) -> *Box<T> {
-    cast::transmute(x)
-}
-
-pub fn jsstring_to_str(cx: *JSContext, s: *JSString) -> DOMString {
+pub fn jsstring_to_str(cx: *mut JSContext, s: *mut JSString) -> DOMString {
     unsafe {
-        let length = 0;
-        let chars = JS_GetStringCharsAndLength(cx, s, &length);
-        vec::raw::buf_as_slice(chars, length as uint, |char_vec| {
-            str::from_utf16(char_vec)
+        let mut length = 0;
+        let chars = JS_GetStringCharsAndLength(cx, s, &mut length);
+        slice::raw::buf_as_slice(chars, length as uint, |char_vec| {
+            str::from_utf16(char_vec).unwrap()
         })
     }
 }
 
-pub fn jsid_to_str(cx: *JSContext, id: jsid) -> DOMString {
+pub fn jsid_to_str(cx: *mut JSContext, id: jsid) -> DOMString {
     unsafe {
         assert!(RUST_JSID_IS_STRING(id) != 0);
         jsstring_to_str(cx, RUST_JSID_TO_STRING(id))
-    }
-}
-
-#[deriving(Eq)]
-pub enum StringificationBehavior {
-    Default,
-    Empty,
-}
-
-pub fn jsval_to_str(cx: *JSContext, v: JSVal,
-                    nullBehavior: StringificationBehavior) -> Result<DOMString, ()> {
-    if jsval::is_null(v) && nullBehavior == Empty {
-        Ok(~"")
-    } else {
-        let jsstr = unsafe { JS_ValueToString(cx, v) };
-        if jsstr.is_null() {
-            debug!("JS_ValueToString failed");
-            Err(())
-        } else {
-            Ok(jsstring_to_str(cx, jsstr))
-        }
-    }
-}
-
-pub fn jsval_to_domstring(cx: *JSContext, v: JSVal) -> Result<Option<DOMString>, ()> {
-    if jsval::is_null(v) || jsval::is_undefined(v) {
-        Ok(None)
-    } else {
-        let jsstr = unsafe { JS_ValueToString(cx, v) };
-        if jsstr.is_null() {
-            debug!("JS_ValueToString failed");
-            Err(())
-        } else {
-            Ok(Some(jsstring_to_str(cx, jsstr)))
-        }
-    }
-}
-
-pub unsafe fn str_to_jsval(cx: *JSContext, string: DOMString) -> JSVal {
-    let string_utf16 = string.to_utf16();
-    let jsstr = JS_NewUCStringCopyN(cx, string_utf16.as_ptr(), string_utf16.len() as libc::size_t);
-    if jsstr.is_null() {
-        // FIXME: is there something else we should do on failure?
-        JSVAL_NULL
-    } else {
-        RUST_STRING_TO_JSVAL(jsstr)
-    }
-}
-
-pub unsafe fn domstring_to_jsval(cx: *JSContext, string: Option<DOMString>) -> JSVal {
-    match string {
-        None => JSVAL_NULL,
-        Some(s) => str_to_jsval(cx, s),
     }
 }
 
@@ -290,40 +179,6 @@ pub static DOM_PROTOTYPE_SLOT: u32 = js::JSCLASS_GLOBAL_SLOT_COUNT;
 // changes.
 pub static JSCLASS_DOM_GLOBAL: u32 = js::JSCLASS_USERBIT1;
 
-pub struct NativeProperties {
-    staticMethods: *JSFunctionSpec,
-    staticMethodIds: *jsid,
-    staticMethodsSpecs: *JSFunctionSpec,
-    staticAttributes: *JSPropertySpec,
-    staticAttributeIds: *jsid,
-    staticAttributeSpecs: *JSPropertySpec,
-    methods: *JSFunctionSpec,
-    methodIds: *jsid,
-    methodsSpecs: *JSFunctionSpec,
-    attributes: *JSPropertySpec,
-    attributeIds: *jsid,
-    attributeSpecs: *JSPropertySpec,
-    unforgeableAttributes: *JSPropertySpec,
-    unforgeableAttributeIds: *jsid,
-    unforgeableAttributeSpecs: *JSPropertySpec,
-    constants: *ConstantSpec,
-    constantIds: *jsid,
-    constantSpecs: *ConstantSpec
-}
-
-pub struct NativePropertyHooks {
-    resolve_own_property: *u8,
-    resolve_property: extern "C" fn(*JSContext, *JSObject, jsid, bool, *mut JSPropertyDescriptor) -> bool,
-    enumerate_own_properties: *u8,
-    enumerate_properties: *u8,
-    proto_hooks: *NativePropertyHooks
-}
-
-pub struct JSNativeHolder {
-    native: js::jsapi::JSNative,
-    propertyHooks: *NativePropertyHooks
-}
-
 #[deriving(Clone)]
 pub enum ConstantVal {
     IntVal(i32),
@@ -336,65 +191,62 @@ pub enum ConstantVal {
 
 #[deriving(Clone)]
 pub struct ConstantSpec {
-    name: *libc::c_char,
-    value: ConstantVal
+    pub name: *libc::c_char,
+    pub value: ConstantVal
 }
 
 pub struct DOMClass {
     // A list of interfaces that this object implements, in order of decreasing
     // derivedness.
-    interface_chain: [PrototypeList::id::ID, ..MAX_PROTO_CHAIN_LENGTH],
-
-    unused: bool, // DOMObjectIsISupports (always false)
-    native_hooks: *NativePropertyHooks
+    pub interface_chain: [PrototypeList::id::ID, ..MAX_PROTO_CHAIN_LENGTH]
 }
 
 pub struct DOMJSClass {
-    base: JSClass,
-    dom_class: DOMClass
+    pub base: js::Class,
+    pub dom_class: DOMClass
 }
 
-pub fn GetProtoOrIfaceArray(global: *JSObject) -> **JSObject {
+pub fn GetProtoOrIfaceArray(global: *mut JSObject) -> *mut *mut JSObject {
     unsafe {
-        /*assert ((*JS_GetClass(global)).flags & JSCLASS_DOM_GLOBAL) != 0;*/
-        cast::transmute(RUST_JSVAL_TO_PRIVATE(JS_GetReservedSlot(global, DOM_PROTOTYPE_SLOT)))
+        assert!(((*JS_GetClass(global)).flags & JSCLASS_DOM_GLOBAL) != 0);
+        JS_GetReservedSlot(global, DOM_PROTOTYPE_SLOT).to_private() as *mut *mut JSObject
     }
 }
 
-pub fn CreateInterfaceObjects2(cx: *JSContext, global: *JSObject, receiver: *JSObject,
-                               protoProto: *JSObject, protoClass: *JSClass,
-                               constructorClass: *JSClass, constructor: Option<JSNative>,
+pub fn CreateInterfaceObjects2(cx: *mut JSContext, global: *mut JSObject, receiver: *mut JSObject,
+                               protoProto: *mut JSObject, protoClass: *JSClass,
+                               constructor: JSNative,
                                ctorNargs: u32,
                                domClass: *DOMClass,
                                methods: *JSFunctionSpec,
                                properties: *JSPropertySpec,
                                constants: *ConstantSpec,
                                staticMethods: *JSFunctionSpec,
-                               name: &str) -> *JSObject {
-    let mut proto = ptr::null();
+                               name: &str) -> *mut JSObject {
+    let mut proto = ptr::mut_null();
     if protoClass.is_not_null() {
         proto = CreateInterfacePrototypeObject(cx, global, protoProto,
                                                protoClass, methods,
                                                properties, constants);
         if proto.is_null() {
-            return ptr::null();
+            return ptr::mut_null();
         }
 
         unsafe {
             JS_SetReservedSlot(proto, DOM_PROTO_INSTANCE_CLASS_SLOT,
-                               RUST_PRIVATE_TO_JSVAL(domClass as *libc::c_void));
+                               PrivateValue(domClass as *libc::c_void));
         }
     }
 
-    let mut interface = ptr::null();
-    if constructorClass.is_not_null() || constructor.is_some() {
+    let mut interface = ptr::mut_null();
+    if constructor.is_some() {
         interface = name.to_c_str().with_ref(|s| {
-            CreateInterfaceObject(cx, global, receiver, constructorClass,
+            CreateInterfaceObject(cx, global, receiver,
                                   constructor, ctorNargs, proto,
                                   staticMethods, constants, s)
         });
         if interface.is_null() {
-            return ptr::null();
+            return ptr::mut_null();
         }
     }
 
@@ -405,85 +257,52 @@ pub fn CreateInterfaceObjects2(cx: *JSContext, global: *JSObject, receiver: *JSO
     }
 }
 
-fn CreateInterfaceObject(cx: *JSContext, global: *JSObject, receiver: *JSObject,
-                         constructorClass: *JSClass, constructorNative: Option<JSNative>,
-                         ctorNargs: u32, proto: *JSObject,
+fn CreateInterfaceObject(cx: *mut JSContext, global: *mut JSObject, receiver: *mut JSObject,
+                         constructorNative: JSNative,
+                         ctorNargs: u32, proto: *mut JSObject,
                          staticMethods: *JSFunctionSpec,
                          constants: *ConstantSpec,
-                         name: *libc::c_char) -> *JSObject {
+                         name: *libc::c_char) -> *mut JSObject {
     unsafe {
-        let constructor = if constructorClass.is_not_null() {
-            let functionProto = JS_GetFunctionPrototype(cx, global);
-            if functionProto.is_null() {
-                ptr::null()
-            } else {
-                JS_NewObject(cx, constructorClass, functionProto, global)
-            }
-        } else {
-            let fun = JS_NewFunction(cx, constructorNative, ctorNargs,
-                                     JSFUN_CONSTRUCTOR, global, name);
-            if fun.is_null() {
-                ptr::null()
-            } else {
-                JS_GetFunctionObject(fun)
-            }
-        };
-
-        if constructor.is_null() {
-            return ptr::null();
+        let fun = JS_NewFunction(cx, constructorNative, ctorNargs,
+                                 JSFUN_CONSTRUCTOR, global, name);
+        if fun.is_null() {
+            return ptr::mut_null();
         }
+
+        let constructor = JS_GetFunctionObject(fun);
+        assert!(constructor.is_not_null());
 
         if staticMethods.is_not_null() &&
             !DefineMethods(cx, constructor, staticMethods) {
-            return ptr::null();
-        }
-
-        if constructorClass.is_not_null() {
-            let toString = "toString".to_c_str().with_ref(|s| {
-                DefineFunctionWithReserved(cx, constructor, s,
-                                           InterfaceObjectToString,
-                                           0, 0)
-            });
-            if toString.is_null() {
-                return ptr::null();
-            }
-
-            let toStringObj = JS_GetFunctionObject(toString);
-            SetFunctionNativeReserved(toStringObj, TOSTRING_CLASS_RESERVED_SLOT,
-                                      &RUST_PRIVATE_TO_JSVAL(constructorClass as *libc::c_void));
-            let s = JS_InternString(cx, name);
-            if s.is_null() {
-                return ptr::null();
-            }
-            SetFunctionNativeReserved(toStringObj, TOSTRING_NAME_RESERVED_SLOT,
-                                      &RUST_STRING_TO_JSVAL(s));
+            return ptr::mut_null();
         }
 
         if constants.is_not_null() &&
             !DefineConstants(cx, constructor, constants) {
-            return ptr::null();
+            return ptr::mut_null();
         }
 
         if proto.is_not_null() && JS_LinkConstructorAndPrototype(cx, constructor, proto) == 0 {
-            return ptr::null();
+            return ptr::mut_null();
         }
 
-        let alreadyDefined = 0;
-        if JS_AlreadyHasOwnProperty(cx, receiver, name, &alreadyDefined) == 0 {
-            return ptr::null();
+        let mut alreadyDefined = 0;
+        if JS_AlreadyHasOwnProperty(cx, receiver, name, &mut alreadyDefined) == 0 {
+            return ptr::mut_null();
         }
 
         if alreadyDefined == 0 &&
-            JS_DefineProperty(cx, receiver, name, RUST_OBJECT_TO_JSVAL(constructor),
+            JS_DefineProperty(cx, receiver, name, ObjectValue(&*constructor),
                               None, None, 0) == 0 {
-            return ptr::null();
+            return ptr::mut_null();
         }
 
         return constructor;
     }
 }
 
-fn DefineConstants(cx: *JSContext, obj: *JSObject, constants: *ConstantSpec) -> bool {
+fn DefineConstants(cx: *mut JSContext, obj: *mut JSObject, constants: *ConstantSpec) -> bool {
     let mut i = 0;
     loop {
         unsafe {
@@ -492,13 +311,12 @@ fn DefineConstants(cx: *JSContext, obj: *JSObject, constants: *ConstantSpec) -> 
                 return true;
             }
             let jsval = match spec.value {
-                NullVal => JSVAL_NULL,
-                IntVal(i) => RUST_INT_TO_JSVAL(i),
-                UintVal(u) => RUST_UINT_TO_JSVAL(u),
-                DoubleVal(d) => RUST_DOUBLE_TO_JSVAL(d),
-                BoolVal(b) if b => JSVAL_TRUE,
-                BoolVal(_) => JSVAL_FALSE,
-                VoidVal => JSVAL_VOID
+                NullVal => NullValue(),
+                IntVal(i) => Int32Value(i),
+                UintVal(u) => UInt32Value(u),
+                DoubleVal(d) => DoubleValue(d),
+                BoolVal(b) => BooleanValue(b),
+                VoidVal => UndefinedValue(),
             };
             if JS_DefineProperty(cx, obj, spec.name,
                                  jsval, None,
@@ -512,76 +330,57 @@ fn DefineConstants(cx: *JSContext, obj: *JSObject, constants: *ConstantSpec) -> 
     }
 }
 
-fn DefineMethods(cx: *JSContext, obj: *JSObject, methods: *JSFunctionSpec) -> bool {
+fn DefineMethods(cx: *mut JSContext, obj: *mut JSObject, methods: *JSFunctionSpec) -> bool {
     unsafe {
         JS_DefineFunctions(cx, obj, methods) != 0
     }
 }
 
-fn DefineProperties(cx: *JSContext, obj: *JSObject, properties: *JSPropertySpec) -> bool {
+fn DefineProperties(cx: *mut JSContext, obj: *mut JSObject, properties: *JSPropertySpec) -> bool {
     unsafe {
         JS_DefineProperties(cx, obj, properties) != 0
     }
 }
 
-fn CreateInterfacePrototypeObject(cx: *JSContext, global: *JSObject,
-                                  parentProto: *JSObject, protoClass: *JSClass,
+fn CreateInterfacePrototypeObject(cx: *mut JSContext, global: *mut JSObject,
+                                  parentProto: *mut JSObject, protoClass: *JSClass,
                                   methods: *JSFunctionSpec,
                                   properties: *JSPropertySpec,
-                                  constants: *ConstantSpec) -> *JSObject {
+                                  constants: *ConstantSpec) -> *mut JSObject {
     unsafe {
         let ourProto = JS_NewObjectWithUniqueType(cx, protoClass, parentProto, global);
         if ourProto.is_null() {
-            return ptr::null();
+            return ptr::mut_null();
         }
 
         if methods.is_not_null() && !DefineMethods(cx, ourProto, methods) {
-            return ptr::null();
+            return ptr::mut_null();
         }
 
         if properties.is_not_null() && !DefineProperties(cx, ourProto, properties) {
-            return ptr::null();
+            return ptr::mut_null();
         }
 
         if constants.is_not_null() && !DefineConstants(cx, ourProto, constants) {
-            return ptr::null();
+            return ptr::mut_null();
         }
 
         return ourProto;
     }
 }
 
-pub extern fn ThrowingConstructor(_cx: *JSContext, _argc: c_uint, _vp: *mut JSVal) -> JSBool {
+pub extern fn ThrowingConstructor(_cx: *mut JSContext, _argc: c_uint, _vp: *mut JSVal) -> JSBool {
     //XXX should trigger exception here
     return 0;
 }
 
-pub trait Traceable {
-    fn trace(&self, trc: *mut JSTracer);
-}
-
-pub fn trace_reflector(tracer: *mut JSTracer, description: &str, reflector: &Reflector) {
+pub fn initialize_global(global: *mut JSObject) {
+    let protoArray = box () ([0 as *mut JSObject, ..PrototypeList::id::IDCount as uint]);
     unsafe {
-        description.to_c_str().with_ref(|name| {
-            (*tracer).debugPrinter = ptr::null();
-            (*tracer).debugPrintIndex = -1;
-            (*tracer).debugPrintArg = name as *libc::c_void;
-            debug!("tracing {:s}", description);
-            JS_CallTracer(tracer as *JSTracer, reflector.get_jsobject(),
-                          JSTRACE_OBJECT as u32);
-        });
-    }
-}
-
-pub fn initialize_global(global: *JSObject) {
-    let protoArray = @mut ([0 as *JSObject, ..PrototypeList::id::_ID_Count as uint]);
-    unsafe {
-        //XXXjdm we should be storing the box pointer instead of the inner
-        let box_ = squirrel_away(protoArray);
-        let inner = ptr::to_unsafe_ptr(&(*box_).data);
+        let box_ = squirrel_away_unique(protoArray);
         JS_SetReservedSlot(global,
                            DOM_PROTOTYPE_SLOT,
-                           RUST_PRIVATE_TO_JSVAL(inner as *libc::c_void));
+                           PrivateValue(box_ as *libc::c_void));
     }
 }
 
@@ -591,51 +390,46 @@ pub trait Reflectable {
 }
 
 pub fn reflect_dom_object<T: Reflectable>
-        (obj:     ~T,
-         window:  &window::Window,
-         wrap_fn: extern "Rust" fn(*JSContext, *JSObject, ~T) -> *JSObject)
-         ->       JS<T> {
-    JS::new(obj, window, wrap_fn)
+        (obj:     Box<T>,
+         window:  &JSRef<window::Window>,
+         wrap_fn: extern "Rust" fn(*mut JSContext, &JSRef<window::Window>, Box<T>) -> JS<T>)
+         -> Temporary<T> {
+    Temporary::new(wrap_fn(window.deref().get_cx(), window, obj))
 }
 
 #[deriving(Eq)]
 pub struct Reflector {
-    object: *JSObject,
-    force_box_layout: @int,
+    pub object: *mut JSObject,
 }
 
 impl Reflector {
     #[inline]
-    pub fn get_jsobject(&self) -> *JSObject {
+    pub fn get_jsobject(&self) -> *mut JSObject {
         self.object
     }
 
-    pub fn set_jsobject(&mut self, object: *JSObject) {
+    pub fn set_jsobject(&mut self, object: *mut JSObject) {
         assert!(self.object.is_null());
         assert!(object.is_not_null());
         self.object = object;
     }
 
+    /// Return a pointer to the memory location at which the JS reflector object is stored.
+    /// Used by Temporary values to root the reflector, as required by the JSAPI rooting
+    /// APIs.
+    pub fn rootable<'a>(&'a mut self) -> &'a mut *mut JSObject {
+        &mut self.object
+    }
+
     pub fn new() -> Reflector {
         Reflector {
-            object: ptr::null(),
-            force_box_layout: @1,
+            object: ptr::mut_null(),
         }
     }
 }
 
-pub fn GetReflector(cx: *JSContext, reflector: &Reflector,
-                    vp: *mut JSVal) -> JSBool {
-    let obj = reflector.get_jsobject();
-    assert!(obj.is_not_null());
-    unsafe {
-        *vp = RUST_OBJECT_TO_JSVAL(obj);
-        return JS_WrapValue(cx, cast::transmute(vp));
-    }
-}
-
-pub fn GetPropertyOnPrototype(cx: *JSContext, proxy: *JSObject, id: jsid, found: *mut bool,
-                              vp: *JSVal) -> bool {
+pub fn GetPropertyOnPrototype(cx: *mut JSContext, proxy: *mut JSObject, id: jsid, found: *mut bool,
+                              vp: *mut JSVal) -> bool {
     unsafe {
       //let proto = GetObjectProto(proxy);
       let proto = JS_GetPrototype(proxy);
@@ -643,8 +437,8 @@ pub fn GetPropertyOnPrototype(cx: *JSContext, proxy: *JSObject, id: jsid, found:
           *found = false;
           return true;
       }
-      let hasProp = 0;
-      if JS_HasPropertyById(cx, proto, id, ptr::to_unsafe_ptr(&hasProp)) == 0 {
+      let mut hasProp = 0;
+      if JS_HasPropertyById(cx, proto, id, &mut hasProp) == 0 {
           return false;
       }
       *found = hasProp != 0;
@@ -657,7 +451,7 @@ pub fn GetPropertyOnPrototype(cx: *JSContext, proxy: *JSObject, id: jsid, found:
   }
 }
 
-pub fn GetArrayIndexFromId(_cx: *JSContext, id: jsid) -> Option<u32> {
+pub fn GetArrayIndexFromId(_cx: *mut JSContext, id: jsid) -> Option<u32> {
     unsafe {
         if RUST_JSID_IS_INT(id) != 0 {
             return Some(RUST_JSID_TO_INT(id) as u32);
@@ -680,56 +474,7 @@ pub fn GetArrayIndexFromId(_cx: *JSContext, id: jsid) -> Option<u32> {
     }*/
 }
 
-pub fn XrayResolveProperty(cx: *JSContext,
-                           wrapper: *JSObject,
-                           id: jsid,
-                           desc: *mut JSPropertyDescriptor,
-                           _methods: Option<~[(JSFunctionSpec, jsid)]>,
-                           attributes: Option<~[(JSPropertySpec, jsid)]>,
-                           _constants: Option<~[(ConstantSpec, jsid)]>) -> bool
-{
-  unsafe {
-    match attributes {
-        Some(attrs) => {
-            for &elem in attrs.iter() {
-                let (attr, attr_id) = elem;
-                if attr_id == JSID_VOID || attr_id != id {
-                    continue;
-                }
-
-                (*desc).attrs = (attr.flags & !(JSPROP_NATIVE_ACCESSORS as u8)) as u32;
-                let global = JS_GetGlobalForObject(cx, wrapper);
-                let fun = JS_NewFunction(cx, attr.getter.op, 0, 0, global, ptr::null());
-                if fun.is_null() {
-                    return false;
-                }
-
-                RUST_SET_JITINFO(fun, attr.getter.info);
-                let funobj = JS_GetFunctionObject(fun);
-                (*desc).getter = Some(cast::transmute(funobj));
-                (*desc).attrs |= JSPROP_GETTER;
-                if attr.setter.op.is_some() {
-                    let fun = JS_NewFunction(cx, attr.setter.op, 1, 0, global, ptr::null());
-                    if fun.is_null() {
-                        return false
-                    }
-
-                    RUST_SET_JITINFO(fun, attr.setter.info);
-                    let funobj = JS_GetFunctionObject(fun);
-                    (*desc).setter = Some(cast::transmute(funobj));
-                    (*desc).attrs |= JSPROP_SETTER;
-                } else {
-                    (*desc).setter = None;
-                }
-            }
-        }
-        None => ()
-    }
-    return true;
-  }
-}
-
-fn InternJSString(cx: *JSContext, chars: *libc::c_char) -> Option<jsid> {
+fn InternJSString(cx: *mut JSContext, chars: *libc::c_char) -> Option<jsid> {
     unsafe {
         let s = JS_InternString(cx, chars);
         if s.is_not_null() {
@@ -740,7 +485,7 @@ fn InternJSString(cx: *JSContext, chars: *libc::c_char) -> Option<jsid> {
     }
 }
 
-pub fn InitIds(cx: *JSContext, specs: &[JSPropertySpec], ids: &mut [jsid]) -> bool {
+pub fn InitIds(cx: *mut JSContext, specs: &[JSPropertySpec], ids: &mut [jsid]) -> bool {
     for (i, spec) in specs.iter().enumerate() {
         if spec.name.is_null() == true {
             return true;
@@ -755,157 +500,148 @@ pub fn InitIds(cx: *JSContext, specs: &[JSPropertySpec], ids: &mut [jsid]) -> bo
     true
 }
 
-#[deriving(ToStr)]
-pub enum Error {
-    FailureUnknown,
-    NotFound,
-    HierarchyRequest,
-    InvalidCharacter,
-    NotSupported,
-    InvalidState,
-    NamespaceError
-}
-
-pub type Fallible<T> = Result<T, Error>;
-
-pub type ErrorResult = Fallible<()>;
-
-pub struct EnumEntry {
-    value: &'static str,
-    length: uint
-}
-
-pub fn FindEnumStringIndex(cx: *JSContext,
+pub fn FindEnumStringIndex(cx: *mut JSContext,
                            v: JSVal,
-                           values: &[EnumEntry]) -> Result<uint, ()> {
+                           values: &[&'static str]) -> Result<Option<uint>, ()> {
     unsafe {
         let jsstr = JS_ValueToString(cx, v);
         if jsstr.is_null() {
             return Err(());
         }
-        let length = 0;
-        let chars = JS_GetStringCharsAndLength(cx, jsstr, &length);
+
+        let mut length = 0;
+        let chars = JS_GetStringCharsAndLength(cx, jsstr, &mut length);
         if chars.is_null() {
             return Err(());
         }
-        for (i, value) in values.iter().enumerate() {
-            if value.length != length as uint {
-                continue;
-            }
-            let mut equal = true;
-            for j in range(0, length as int) {
-                if value.value[j] as u16 != *chars.offset(j) {
-                    equal = false;
-                    break;
-                }
-            };
 
-            if equal {
-                return Ok(i);
-            }
-        }
-
-        return Err(()); //XXX pass in behaviour for value not found
+        Ok(values.iter().position(|value| {
+            value.len() == length as uint &&
+            range(0, length as uint).all(|j| {
+                value[j] as u16 == *chars.offset(j as int)
+            })
+        }))
     }
 }
 
-pub fn HasPropertyOnPrototype(cx: *JSContext, proxy: *JSObject, id: jsid) -> bool {
-    //  MOZ_ASSERT(js::IsProxy(proxy) && js::GetProxyHandler(proxy) == handler);
-    let mut found = false;
-    return !GetPropertyOnPrototype(cx, proxy, id, &mut found, ptr::null()) || found;
+pub fn get_dictionary_property(cx: *mut JSContext,
+                               object: *mut JSObject,
+                               property: &str) -> Result<Option<JSVal>, ()> {
+    use std::c_str::CString;
+    fn has_property(cx: *mut JSContext, object: *mut JSObject, property: &CString,
+                    found: &mut JSBool) -> bool {
+        unsafe {
+            property.with_ref(|s| {
+                JS_HasProperty(cx, object, s, found) != 0
+            })
+        }
+    }
+    fn get_property(cx: *mut JSContext, object: *mut JSObject, property: &CString,
+                    value: &mut JSVal) -> bool {
+        unsafe {
+            property.with_ref(|s| {
+                JS_GetProperty(cx, object, s, value) != 0
+            })
+        }
+    }
+
+    let property = property.to_c_str();
+    if object.is_null() {
+        return Ok(None);
+    }
+
+    let mut found: JSBool = 0;
+    if !has_property(cx, object, &property, &mut found) {
+        return Err(());
+    }
+
+    if found == 0 {
+        return Ok(None);
+    }
+
+    let mut value = NullValue();
+    if !get_property(cx, object, &property, &mut value) {
+        return Err(());
+    }
+
+    Ok(Some(value))
 }
 
-pub fn IsConvertibleToCallbackInterface(cx: *JSContext, obj: *JSObject) -> bool {
+pub fn HasPropertyOnPrototype(cx: *mut JSContext, proxy: *mut JSObject, id: jsid) -> bool {
+    //  MOZ_ASSERT(js::IsProxy(proxy) && js::GetProxyHandler(proxy) == handler);
+    let mut found = false;
+    return !GetPropertyOnPrototype(cx, proxy, id, &mut found, ptr::mut_null()) || found;
+}
+
+pub fn IsConvertibleToCallbackInterface(cx: *mut JSContext, obj: *mut JSObject) -> bool {
     unsafe {
         JS_ObjectIsDate(cx, obj) == 0 && JS_ObjectIsRegExp(cx, obj) == 0
     }
 }
 
-pub fn CreateDOMGlobal(cx: *JSContext, class: *JSClass) -> *JSObject {
+pub fn CreateDOMGlobal(cx: *mut JSContext, class: *JSClass) -> *mut JSObject {
     unsafe {
-        let obj = JS_NewGlobalObject(cx, class, ptr::null());
+        let obj = JS_NewGlobalObject(cx, class, ptr::mut_null());
         if obj.is_null() {
-            return ptr::null();
+            return ptr::mut_null();
         }
-        JS_InitStandardClasses(cx, obj);
+        with_compartment(cx, obj, || {
+            JS_InitStandardClasses(cx, obj);
+        });
         initialize_global(obj);
         obj
     }
 }
 
+pub extern fn wrap_for_same_compartment(cx: *mut JSContext, obj: *mut JSObject) -> *mut JSObject {
+    unsafe {
+        JS_ObjectToOuterObject(cx, obj)
+    }
+}
+
+pub extern fn pre_wrap(cx: *mut JSContext, _scope: *mut JSObject,
+                       obj: *mut JSObject, _flags: c_uint) -> *mut JSObject {
+    unsafe {
+        JS_ObjectToOuterObject(cx, obj)
+    }
+}
+
+pub extern fn outerize_global(_cx: *mut JSContext, obj: JSHandleObject) -> *mut JSObject {
+    unsafe {
+        debug!("outerizing");
+        let obj = *obj.unnamed_field1;
+        let win: Root<window::Window> =
+            unwrap_jsmanaged(obj,
+                             IDLInterface::get_prototype_id(None::<window::Window>),
+                             IDLInterface::get_prototype_depth(None::<window::Window>))
+            .unwrap()
+            .root();
+        win.deref().browser_context.get_ref().window_proxy()
+    }
+}
+
 /// Returns the global object of the realm that the given JS object was created in.
-fn global_object_for_js_object(obj: *JSObject) -> *Box<window::Window> {
+pub fn global_object_for_js_object(obj: *mut JSObject) -> JS<window::Window> {
     unsafe {
         let global = GetGlobalForObjectCrossCompartment(obj);
         let clasp = JS_GetClass(global);
         assert!(((*clasp).flags & (JSCLASS_IS_DOMJSCLASS | JSCLASS_IS_GLOBAL)) != 0);
-        // FIXME(jdm): Either don't hardcode or sanity assert prototype stuff.
-        match unwrap_object::<*Box<window::Window>>(global, PrototypeList::id::Window, 1) {
-            Ok(win) => win,
-            Err(_) => fail!("found DOM global that doesn't unwrap to Window"),
-        }
+        FromJSValConvertible::from_jsval(ptr::mut_null(), ObjectOrNullValue(global), ())
+            .ok().expect("found DOM global that doesn't unwrap to Window")
     }
 }
 
-fn cx_for_dom_reflector(obj: *JSObject) -> *JSContext {
-    unsafe {
-        let win = global_object_for_js_object(obj);
-        match (*win).data.page.js_info {
-            Some(ref info) => info.js_context.ptr,
-            None => fail!("no JS context for DOM global")
-        }
+fn cx_for_dom_reflector(obj: *mut JSObject) -> *mut JSContext {
+    let win = global_object_for_js_object(obj).root();
+    let js_info = win.deref().page().js_info();
+    match *js_info {
+        Some(ref info) => info.js_context.deref().deref().ptr,
+        None => fail!("no JS context for DOM global")
     }
 }
 
-/// Returns the global object of the realm that the given DOM object was created in.
-pub fn global_object_for_dom_object<T: Reflectable>(obj: &T) -> *Box<window::Window> {
-    global_object_for_js_object(obj.reflector().get_jsobject())
-}
-
-pub fn cx_for_dom_object<T: Reflectable>(obj: &T) -> *JSContext {
+pub fn cx_for_dom_object<T: Reflectable>(obj: &T) -> *mut JSContext {
     cx_for_dom_reflector(obj.reflector().get_jsobject())
-}
-
-pub fn throw_method_failed_with_details<T>(cx: *JSContext,
-                                           result: Result<T, Error>,
-                                           interface: &'static str,
-                                           member: &'static str) -> JSBool {
-    assert!(result.is_err());
-    assert!(unsafe { JS_IsExceptionPending(cx) } == 0);
-    let message = format!("Method failed: {}.{}", interface, member);
-    message.with_c_str(|string| {
-        unsafe { ReportError(cx, string) };
-    });
-    return 0;
-}
-
-pub fn throw_not_in_union(cx: *JSContext, names: &'static str) -> JSBool {
-    assert!(unsafe { JS_IsExceptionPending(cx) } == 0);
-    let message = format!("argument could not be converted to any of: {}", names);
-    message.with_c_str(|string| {
-        unsafe { ReportError(cx, string) };
-    });
-    return 0;
-}
-
-/// Execute arbitrary code with the JS GC enabled, then disable it afterwards.
-pub fn with_gc_enabled<R>(cx: *JSContext, f: || -> R) -> R {
-    unsafe {
-        JS_AllowGC(cx);
-        let rv = f();
-        JS_InhibitGC(cx);
-        rv
-    }
-}
-
-/// Execute arbitrary code with the JS GC disabled, then enable it afterwards.
-pub fn with_gc_disabled<R>(cx: *JSContext, f: || -> R) -> R {
-    unsafe {
-        JS_InhibitGC(cx);
-        let rv = f();
-        JS_AllowGC(cx);
-        rv
-    }
 }
 
 /// Check if an element name is valid. See http://www.w3.org/TR/xml/#NT-Name

@@ -2,27 +2,33 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLElementBinding;
-use dom::bindings::codegen::InheritTypes::HTMLElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::{ErrorResult, Fallible};
+use dom::bindings::codegen::BindingDeclarations::HTMLElementBinding;
+use dom::bindings::codegen::EventHandlerBinding::EventHandlerNonNull;
+use dom::bindings::codegen::InheritTypes::{ElementCast, HTMLFrameSetElementDerived};
+use dom::bindings::codegen::InheritTypes::{HTMLElementDerived, HTMLBodyElementDerived};
+use dom::bindings::codegen::InheritTypes::EventTargetCast;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::{ErrorResult, Fallible};
 use dom::document::Document;
 use dom::element::{Element, ElementTypeId, HTMLElementTypeId};
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
-use dom::node::{Node, ElementNodeTypeId};
-use js::jsapi::{JSContext, JSVal};
-use js::JSVAL_NULL;
+use dom::node::{Node, ElementNodeTypeId, window_from_node};
+use dom::virtualmethods::VirtualMethods;
+use dom::window::WindowMethods;
+use js::jsapi::JSContext;
+use js::jsval::{JSVal, NullValue};
 use servo_util::namespace;
 use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLElement {
-    element: Element
+    pub element: Element
 }
 
 impl HTMLElementDerived for EventTarget {
     fn is_htmlelement(&self) -> bool {
         match self.type_id {
+            NodeTargetTypeId(ElementNodeTypeId(ElementTypeId)) => false,
             NodeTargetTypeId(ElementNodeTypeId(_)) => true,
             _ => false
         }
@@ -30,140 +36,202 @@ impl HTMLElementDerived for EventTarget {
 }
 
 impl HTMLElement {
-    pub fn new_inherited(type_id: ElementTypeId, tag_name: DOMString, document: JS<Document>) -> HTMLElement {
+    pub fn new_inherited(type_id: ElementTypeId, tag_name: DOMString, document: &JSRef<Document>) -> HTMLElement {
         HTMLElement {
-            element: Element::new_inherited(type_id, tag_name, namespace::HTML, document)
+            element: Element::new_inherited(type_id, tag_name, namespace::HTML, None, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLElement> {
-        let element = HTMLElement::new_inherited(HTMLElementTypeId, localName, document.clone());
-        Node::reflect_node(~element, document, HTMLElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLElement> {
+        let element = HTMLElement::new_inherited(HTMLElementTypeId, localName, document);
+        Node::reflect_node(box element, document, HTMLElementBinding::Wrap)
     }
 }
 
-impl HTMLElement {
-    pub fn Title(&self) -> DOMString {
-        ~""
+trait PrivateHTMLElementHelpers {
+    fn is_body_or_frameset(&self) -> bool;
+}
+
+impl<'a> PrivateHTMLElementHelpers for JSRef<'a, HTMLElement> {
+    fn is_body_or_frameset(&self) -> bool {
+        let eventtarget: &JSRef<EventTarget> = EventTargetCast::from_ref(self);
+        eventtarget.is_htmlbodyelement() || eventtarget.is_htmlframesetelement()
+    }
+}
+
+pub trait HTMLElementMethods {
+    fn Title(&self) -> DOMString;
+    fn SetTitle(&mut self, _title: DOMString);
+    fn Lang(&self) -> DOMString;
+    fn SetLang(&mut self, _lang: DOMString);
+    fn Dir(&self) -> DOMString;
+    fn SetDir(&mut self, _dir: DOMString) -> ErrorResult;
+    fn GetItemValue(&self, _cx: *mut JSContext) -> Fallible<JSVal>;
+    fn SetItemValue(&mut self, _cx: *mut JSContext, _val: JSVal) -> ErrorResult;
+    fn Hidden(&self) -> bool;
+    fn SetHidden(&mut self, _hidden: bool) -> ErrorResult;
+    fn Click(&self);
+    fn TabIndex(&self) -> i32;
+    fn SetTabIndex(&mut self, _index: i32) -> ErrorResult;
+    fn Focus(&self) -> ErrorResult;
+    fn Blur(&self) -> ErrorResult;
+    fn AccessKey(&self) -> DOMString;
+    fn SetAccessKey(&self, _key: DOMString) -> ErrorResult;
+    fn AccessKeyLabel(&self) -> DOMString;
+    fn Draggable(&self) -> bool;
+    fn SetDraggable(&mut self, _draggable: bool) -> ErrorResult;
+    fn ContentEditable(&self) -> DOMString;
+    fn SetContentEditable(&mut self, _val: DOMString) -> ErrorResult;
+    fn IsContentEditable(&self) -> bool;
+    fn Spellcheck(&self) -> bool;
+    fn SetSpellcheck(&self, _val: bool) -> ErrorResult;
+    fn GetOffsetParent(&self) -> Option<Temporary<Element>>;
+    fn OffsetTop(&self) -> i32;
+    fn OffsetLeft(&self) -> i32;
+    fn OffsetWidth(&self) -> i32;
+    fn OffsetHeight(&self) -> i32;
+    fn GetOnload(&self) -> Option<EventHandlerNonNull>;
+    fn SetOnload(&mut self, listener: Option<EventHandlerNonNull>);
+}
+
+impl<'a> HTMLElementMethods for JSRef<'a, HTMLElement> {
+    fn Title(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetTitle(&mut self, _title: DOMString) {
+    fn SetTitle(&mut self, _title: DOMString) {
     }
 
-    pub fn Lang(&self) -> DOMString {
-        ~""
+    fn Lang(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetLang(&mut self, _lang: DOMString) {
+    fn SetLang(&mut self, _lang: DOMString) {
     }
 
-    pub fn Dir(&self) -> DOMString {
-        ~""
+    fn Dir(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetDir(&mut self, _dir: DOMString) -> ErrorResult {
+    fn SetDir(&mut self, _dir: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn GetItemValue(&self, _cx: *JSContext) -> Fallible<JSVal> {
-        Ok(JSVAL_NULL)
+    fn GetItemValue(&self, _cx: *mut JSContext) -> Fallible<JSVal> {
+        Ok(NullValue())
     }
 
-    pub fn SetItemValue(&mut self, _cx: *JSContext, _val: JSVal) -> ErrorResult {
+    fn SetItemValue(&mut self, _cx: *mut JSContext, _val: JSVal) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Hidden(&self) -> bool {
+    fn Hidden(&self) -> bool {
         false
     }
 
-    pub fn SetHidden(&mut self, _hidden: bool) -> ErrorResult {
+    fn SetHidden(&mut self, _hidden: bool) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Click(&self) {
+    fn Click(&self) {
     }
 
-    pub fn TabIndex(&self) -> i32 {
+    fn TabIndex(&self) -> i32 {
         0
     }
 
-    pub fn SetTabIndex(&mut self, _index: i32) -> ErrorResult {
+    fn SetTabIndex(&mut self, _index: i32) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Focus(&self) -> ErrorResult {
+    fn Focus(&self) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Blur(&self) -> ErrorResult {
+    fn Blur(&self) -> ErrorResult {
         Ok(())
     }
 
-    pub fn AccessKey(&self) -> DOMString {
-        ~""
+    fn AccessKey(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetAccessKey(&self, _key: DOMString) -> ErrorResult {
+    fn SetAccessKey(&self, _key: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn AccessKeyLabel(&self) -> DOMString {
-        ~""
+    fn AccessKeyLabel(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn Draggable(&self) -> bool {
+    fn Draggable(&self) -> bool {
         false
     }
 
-    pub fn SetDraggable(&mut self, _draggable: bool) -> ErrorResult {
+    fn SetDraggable(&mut self, _draggable: bool) -> ErrorResult {
         Ok(())
     }
 
-    pub fn ContentEditable(&self) -> DOMString {
-        ~""
+    fn ContentEditable(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetContentEditable(&mut self, _val: DOMString) -> ErrorResult {
+    fn SetContentEditable(&mut self, _val: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn IsContentEditable(&self) -> bool {
+    fn IsContentEditable(&self) -> bool {
         false
     }
 
-    pub fn Spellcheck(&self) -> bool {
+    fn Spellcheck(&self) -> bool {
         false
     }
 
-    pub fn SetSpellcheck(&self, _val: bool) -> ErrorResult {
+    fn SetSpellcheck(&self, _val: bool) -> ErrorResult {
         Ok(())
     }
 
-    pub fn ClassName(&self) -> DOMString {
-        ~""
-    }
-
-    pub fn SetClassName(&self, _class: DOMString) {
-    }
-
-    pub fn GetOffsetParent(&self) -> Option<JS<Element>> {
+    fn GetOffsetParent(&self) -> Option<Temporary<Element>> {
         None
     }
 
-    pub fn OffsetTop(&self) -> i32 {
+    fn OffsetTop(&self) -> i32 {
         0
     }
 
-    pub fn OffsetLeft(&self) -> i32 {
+    fn OffsetLeft(&self) -> i32 {
         0
     }
 
-    pub fn OffsetWidth(&self) -> i32 {
+    fn OffsetWidth(&self) -> i32 {
         0
     }
 
-    pub fn OffsetHeight(&self) -> i32 {
+    fn OffsetHeight(&self) -> i32 {
         0
+    }
+
+    fn GetOnload(&self) -> Option<EventHandlerNonNull> {
+        if self.is_body_or_frameset() {
+            let win = window_from_node(self).root();
+            win.deref().GetOnload()
+        } else {
+            None
+        }
+    }
+
+    fn SetOnload(&mut self, listener: Option<EventHandlerNonNull>) {
+        if self.is_body_or_frameset() {
+            let mut win = window_from_node(self).root();
+            win.SetOnload(listener)
+        }
+    }
+}
+
+impl<'a> VirtualMethods for JSRef<'a, HTMLElement> {
+    fn super_type<'a>(&'a mut self) -> Option<&'a mut VirtualMethods:> {
+        let element: &mut JSRef<Element> = ElementCast::from_mut_ref(self);
+        Some(element as &mut VirtualMethods:)
     }
 }

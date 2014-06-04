@@ -2,11 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-extern mod harfbuzz;
+extern crate harfbuzz;
 
 use font::{Font, FontHandleMethods, FontTableMethods, FontTableTag};
 use platform::font::FontTable;
-use text::glyph::{GlyphStore, GlyphIndex, GlyphData};
+use text::glyph::{CharIndex, GlyphStore, GlyphId, GlyphData};
 use text::shaping::ShaperMethods;
 use text::util::{float_to_fixed, fixed_to_float};
 
@@ -35,28 +35,26 @@ use harfbuzz::{hb_glyph_info_t};
 use harfbuzz::{hb_glyph_position_t};
 use harfbuzz::{hb_position_t, hb_tag_t};
 use harfbuzz::{hb_shape, hb_buffer_get_glyph_infos};
+use libc::{c_uint, c_int, c_void, c_char};
 use servo_util::geometry::Au;
 use servo_util::range::Range;
 use std::cast::transmute;
 use std::char;
-use std::libc::{c_uint, c_int, c_void, c_char};
-use std::num;
+use std::cmp;
 use std::ptr::null;
-use std::ptr;
-use std::vec;
 
 static NO_GLYPH: i32 = -1;
 static CONTINUATION_BYTE: i32 = -2;
 
 pub struct ShapedGlyphData {
-    count: uint,
+    count: int,
     glyph_infos: *hb_glyph_info_t,
     pos_infos: *hb_glyph_position_t,
 }
 
 pub struct ShapedGlyphEntry {
-    cluster: uint,
-    codepoint: GlyphIndex,
+    cluster: int,
+    codepoint: GlyphId,
     advance: Au,
     offset: Option<Point2D<Au>>,
 }
@@ -66,12 +64,13 @@ impl ShapedGlyphData {
         unsafe {
             let glyph_count = 0;
             let glyph_infos = hb_buffer_get_glyph_infos(buffer, &glyph_count);
-            let glyph_count = glyph_count as uint;
+            let glyph_count = glyph_count as int;
             assert!(glyph_infos.is_not_null());
             let pos_count = 0;
             let pos_infos = hb_buffer_get_glyph_positions(buffer, &pos_count);
+            let pos_count = pos_count as int;
             assert!(pos_infos.is_not_null());
-            assert!(glyph_count == pos_count as uint);
+            assert!(glyph_count == pos_count);
 
             ShapedGlyphData {
                 count: glyph_count,
@@ -82,26 +81,26 @@ impl ShapedGlyphData {
     }
 
     #[inline(always)]
-    fn byte_offset_of_glyph(&self, i: uint) -> uint {
+    fn byte_offset_of_glyph(&self, i: int) -> int {
         assert!(i < self.count);
 
         unsafe {
-            let glyph_info_i = ptr::offset(self.glyph_infos, i as int);
-            (*glyph_info_i).cluster as uint
+            let glyph_info_i = self.glyph_infos.offset(i);
+            (*glyph_info_i).cluster as int
         }
     }
 
-    pub fn len(&self) -> uint {
+    pub fn len(&self) -> int {
         self.count
     }
 
     /// Returns shaped glyph data for one glyph, and updates the y-position of the pen.
-    pub fn get_entry_for_glyph(&self, i: uint, y_pos: &mut Au) -> ShapedGlyphEntry {
+    pub fn get_entry_for_glyph(&self, i: int, y_pos: &mut Au) -> ShapedGlyphEntry {
         assert!(i < self.count);
 
         unsafe {
-            let glyph_info_i = ptr::offset(self.glyph_infos, i as int);
-            let pos_info_i = ptr::offset(self.pos_infos, i as int);
+            let glyph_info_i = self.glyph_infos.offset(i);
+            let pos_info_i = self.pos_infos.offset(i);
             let x_offset = Shaper::fixed_to_float((*pos_info_i).x_offset);
             let y_offset = Shaper::fixed_to_float((*pos_info_i).y_offset);
             let x_advance = Shaper::fixed_to_float((*pos_info_i).x_advance);
@@ -124,8 +123,8 @@ impl ShapedGlyphData {
             };
 
             ShapedGlyphEntry {
-                cluster: (*glyph_info_i).cluster as uint,
-                codepoint: (*glyph_info_i).codepoint as GlyphIndex,
+                cluster: (*glyph_info_i).cluster as int,
+                codepoint: (*glyph_info_i).codepoint as GlyphId,
                 advance: x_advance,
                 offset: offset,
             }
@@ -134,9 +133,9 @@ impl ShapedGlyphData {
 }
 
 pub struct Shaper {
-    priv hb_face: *hb_face_t,
-    priv hb_font: *hb_font_t,
-    priv hb_funcs: *hb_font_funcs_t,
+    hb_face: *hb_face_t,
+    hb_font: *hb_font_t,
+    hb_funcs: *hb_font_funcs_t,
 }
 
 #[unsafe_destructor]
@@ -224,16 +223,16 @@ impl Shaper {
     fn save_glyph_results(&self, text: &str, glyphs: &mut GlyphStore, buffer: *hb_buffer_t) {
         let glyph_data = ShapedGlyphData::new(buffer);
         let glyph_count = glyph_data.len();
-        let byte_max = text.len();
-        let char_max = text.char_len();
+        let byte_max = text.len() as int;
+        let char_max = text.char_len() as int;
 
         // GlyphStore records are indexed by character, not byte offset.
         // so, we must be careful to increment this when saving glyph entries.
-        let mut char_idx = 0;
+        let mut char_idx = CharIndex(0);
 
         assert!(glyph_count <= char_max);
 
-        debug!("Shaped text[char count={:u}], got back {:u} glyph info records.",
+        debug!("Shaped text[char count={}], got back {} glyph info records.",
                char_max,
                glyph_count);
 
@@ -243,15 +242,15 @@ impl Shaper {
         }
 
         // make map of what chars have glyphs
-        let mut byteToGlyph: ~[i32];
+        let mut byteToGlyph: Vec<i32>;
 
         // fast path: all chars are single-byte.
         if byte_max == char_max {
-            byteToGlyph = vec::from_elem(byte_max, NO_GLYPH);
+            byteToGlyph = Vec::from_elem(byte_max as uint, NO_GLYPH);
         } else {
-            byteToGlyph = vec::from_elem(byte_max, CONTINUATION_BYTE);
+            byteToGlyph = Vec::from_elem(byte_max as uint, CONTINUATION_BYTE);
             for (i, _) in text.char_indices() {
-                byteToGlyph[i] = NO_GLYPH;
+                *byteToGlyph.get_mut(i) = NO_GLYPH;
             }
         }
 
@@ -260,27 +259,27 @@ impl Shaper {
             // loc refers to a *byte* offset within the utf8 string.
             let loc = glyph_data.byte_offset_of_glyph(i);
             if loc < byte_max {
-                assert!(byteToGlyph[loc] != CONTINUATION_BYTE);
-                byteToGlyph[loc] = i as i32;
+                assert!(*byteToGlyph.get(loc as uint) != CONTINUATION_BYTE);
+                *byteToGlyph.get_mut(loc as uint) = i as i32;
             } else {
-                debug!("ERROR: tried to set out of range byteToGlyph: idx={:u}, glyph idx={:u}",
+                debug!("ERROR: tried to set out of range byteToGlyph: idx={}, glyph idx={}",
                        loc,
                        i);
             }
-            debug!("{:u} -> {:u}", i, loc);
+            debug!("{} -> {}", i, loc);
         }
 
         debug!("text: {:s}", text);
         debug!("(char idx): char->(glyph index):");
         for (i, ch) in text.char_indices() {
-            debug!("{:u}: {} --> {:d}", i, ch, byteToGlyph[i] as int);
+            debug!("{}: {} --> {:d}", i, ch, *byteToGlyph.get(i) as int);
         }
 
         // some helpers
-        let mut glyph_span: Range = Range::empty();
+        let mut glyph_span: Range<int> = Range::empty();
         // this span contains first byte of first char, to last byte of last char in range.
         // so, end() points to first byte of last+1 char, if it's less than byte_max.
-        let mut char_byte_span: Range = Range::empty();
+        let mut char_byte_span: Range<int> = Range::empty();
         let mut y_pos = Au(0);
 
         // main loop over each glyph. each iteration usually processes 1 glyph and 1+ chars.
@@ -289,7 +288,7 @@ impl Shaper {
         while glyph_span.begin() < glyph_count {
             // start by looking at just one glyph.
             glyph_span.extend_by(1);
-            debug!("Processing glyph at idx={:u}", glyph_span.begin());
+            debug!("Processing glyph at idx={}", glyph_span.begin());
 
             let char_byte_start = glyph_data.byte_offset_of_glyph(glyph_span.begin());
             char_byte_span.reset(char_byte_start, 0);
@@ -297,34 +296,34 @@ impl Shaper {
             // find a range of chars corresponding to this glyph, plus
             // any trailing chars that do not have associated glyphs.
             while char_byte_span.end() < byte_max {
-                let range = text.char_range_at(char_byte_span.end());
+                let range = text.char_range_at(char_byte_span.end() as uint);
                 drop(range.ch);
-                char_byte_span.extend_to(range.next);
+                char_byte_span.extend_to(range.next as int);
 
-                debug!("Processing char byte span: off={:u}, len={:u} for glyph idx={:u}",
+                debug!("Processing char byte span: off={}, len={} for glyph idx={}",
                        char_byte_span.begin(), char_byte_span.length(), glyph_span.begin());
 
                 while char_byte_span.end() != byte_max &&
-                        byteToGlyph[char_byte_span.end()] == NO_GLYPH {
-                    debug!("Extending char byte span to include byte offset={:u} with no associated \
+                        *byteToGlyph.get(char_byte_span.end() as uint) == NO_GLYPH {
+                    debug!("Extending char byte span to include byte offset={} with no associated \
                             glyph", char_byte_span.end());
-                    let range = text.char_range_at(char_byte_span.end());
+                    let range = text.char_range_at(char_byte_span.end() as uint);
                     drop(range.ch);
-                    char_byte_span.extend_to(range.next);
+                    char_byte_span.extend_to(range.next as int);
                 }
 
                 // extend glyph range to max glyph index covered by char_span,
                 // in cases where one char made several glyphs and left some unassociated chars.
                 let mut max_glyph_idx = glyph_span.end();
-                for i in char_byte_span.eachi() {
-                    if byteToGlyph[i] > NO_GLYPH {
-                        max_glyph_idx = num::max(byteToGlyph[i] as uint + 1, max_glyph_idx);
+                for i in char_byte_span.each_index() {
+                    if *byteToGlyph.get(i as uint) > NO_GLYPH {
+                        max_glyph_idx = cmp::max(*byteToGlyph.get(i as uint) as int + 1, max_glyph_idx);
                     }
                 }
 
                 if max_glyph_idx > glyph_span.end() {
                     glyph_span.extend_to(max_glyph_idx);
-                    debug!("Extended glyph span (off={:u}, len={:u}) to cover char byte span's max \
+                    debug!("Extended glyph span (off={}, len={}) to cover char byte span's max \
                             glyph index",
                            glyph_span.begin(), glyph_span.length());
                 }
@@ -340,7 +339,7 @@ impl Shaper {
                         probably doesn't work.");
 
                 let mut all_glyphs_are_within_cluster: bool = true;
-                for j in glyph_span.eachi() {
+                for j in glyph_span.each_index() {
                     let loc = glyph_data.byte_offset_of_glyph(j);
                     if !char_byte_span.contains(loc) {
                         all_glyphs_are_within_cluster = false;
@@ -377,10 +376,10 @@ impl Shaper {
             let mut covered_byte_span = char_byte_span.clone();
             // extend, clipping at end of text range.
             while covered_byte_span.end() < byte_max
-                    && byteToGlyph[covered_byte_span.end()] == NO_GLYPH {
-                let range = text.char_range_at(covered_byte_span.end());
+                    && *byteToGlyph.get(covered_byte_span.end() as uint) == NO_GLYPH {
+                let range = text.char_range_at(covered_byte_span.end() as uint);
                 drop(range.ch);
-                covered_byte_span.extend_to(range.next);
+                covered_byte_span.extend_to(range.next as int);
             }
 
             if covered_byte_span.begin() >= byte_max {
@@ -393,7 +392,7 @@ impl Shaper {
 
             // clamp to end of text. (I don't think this will be necessary, but..)
             let end = covered_byte_span.end(); // FIXME: borrow checker workaround
-            covered_byte_span.extend_to(num::min(end, byte_max));
+            covered_byte_span.extend_to(cmp::min(end, byte_max));
 
             // fast path: 1-to-1 mapping of single char and single glyph.
             if glyph_span.length() == 1 {
@@ -412,9 +411,9 @@ impl Shaper {
                 glyphs.add_glyph_for_char_index(char_idx, &data);
             } else {
                 // collect all glyphs to be assigned to the first character.
-                let mut datas = ~[];
+                let mut datas = vec!();
 
-                for glyph_i in glyph_span.eachi() {
+                for glyph_i in glyph_span.each_index() {
                     let shape = glyph_data.get_entry_for_glyph(glyph_i, &mut y_pos);
                     datas.push(GlyphData::new(shape.codepoint,
                                               shape.advance,
@@ -426,16 +425,16 @@ impl Shaper {
                 }
 
                 // now add the detailed glyph entry.
-                glyphs.add_glyphs_for_char_index(char_idx, datas);
+                glyphs.add_glyphs_for_char_index(char_idx, datas.as_slice());
 
                 // set the other chars, who have no glyphs
                 let mut i = covered_byte_span.begin();
                 loop {
-                    let range = text.char_range_at(i);
+                    let range = text.char_range_at(i as uint);
                     drop(range.ch);
-                    i = range.next;
+                    i = range.next as int;
                     if i >= covered_byte_span.end() { break; }
-                    char_idx += 1;
+                    char_idx = char_idx + CharIndex(1);
                     glyphs.add_nonglyph_for_char_index(char_idx, false, false);
                 }
             }
@@ -445,7 +444,7 @@ impl Shaper {
             glyph_span.reset(end, 0);
             let end = char_byte_span.end();; // FIXME: borrow checker workaround
             char_byte_span.reset(end, 0);
-            char_idx += 1;
+            char_idx = char_idx + CharIndex(1);
         }
 
         // this must be called after adding all glyph data; it sorts the
@@ -485,7 +484,7 @@ extern fn glyph_h_advance_func(_: *hb_font_t,
     assert!(font.is_not_null());
 
     unsafe {
-        let advance = (*font).glyph_h_advance(glyph as GlyphIndex);
+        let advance = (*font).glyph_h_advance(glyph as GlyphId);
         Shaper::float_to_fixed(advance)
     }
 }

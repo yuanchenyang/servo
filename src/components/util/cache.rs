@@ -2,11 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use std::hashmap::HashMap;
-use std::rand::Rng;
-use std::rand;
-use std::vec::VecIterator;
-use std::vec;
+use collections::HashMap;
+use rand;
+use rand::Rng;
+use std::hash::{Hash, sip};
+use std::slice::Items;
+
+#[cfg(test)]
+use std::cell::Cell;
 
 pub trait Cache<K: Eq, V: Clone> {
     fn insert(&mut self, key: K, value: V);
@@ -56,8 +59,8 @@ impl<K: Clone + Eq, V: Clone> Cache<K,V> for MonoCache<K,V> {
 #[test]
 fn test_monocache() {
     let mut cache = MonoCache::new(10);
-    let one = @"one";
-    let two = @"two";
+    let one = Cell::new("one");
+    let two = Cell::new("two");
     cache.insert(1, one);
 
     assert!(cache.find(&1).is_some());
@@ -71,7 +74,7 @@ pub struct HashCache<K, V> {
     entries: HashMap<K, V>,
 }
 
-impl<K: Clone + Eq + Hash, V: Clone> HashCache<K,V> {
+impl<K: Clone + Eq + TotalEq + Hash, V: Clone> HashCache<K,V> {
     pub fn new() -> HashCache<K, V> {
         HashCache {
           entries: HashMap::new(),
@@ -79,7 +82,7 @@ impl<K: Clone + Eq + Hash, V: Clone> HashCache<K,V> {
     }
 }
 
-impl<K: Clone + Eq + Hash, V: Clone> Cache<K,V> for HashCache<K,V> {
+impl<K: Clone + Eq + TotalEq + Hash, V: Clone> Cache<K,V> for HashCache<K,V> {
     fn insert(&mut self, key: K, value: V) {
         self.entries.insert(key, value);
     }
@@ -103,8 +106,8 @@ impl<K: Clone + Eq + Hash, V: Clone> Cache<K,V> for HashCache<K,V> {
 #[test]
 fn test_hashcache() {
     let mut cache = HashCache::new();
-    let one = @"one";
-    let two = @"two";
+    let one = Cell::new("one");
+    let two = Cell::new("two");
 
     cache.insert(1, one);
     assert!(cache.find(&1).is_some());
@@ -116,14 +119,14 @@ fn test_hashcache() {
 }
 
 pub struct LRUCache<K, V> {
-    entries: ~[(K, V)],
+    entries: Vec<(K, V)>,
     cache_size: uint,
 }
 
 impl<K: Clone + Eq, V: Clone> LRUCache<K,V> {
     pub fn new(size: uint) -> LRUCache<K, V> {
         LRUCache {
-          entries: ~[],
+          entries: vec!(),
           cache_size: size,
         }
     }
@@ -133,12 +136,12 @@ impl<K: Clone + Eq, V: Clone> LRUCache<K,V> {
         let last_index = self.entries.len() - 1;
         if pos != last_index {
             let entry = self.entries.remove(pos);
-            self.entries.push(entry);
+            self.entries.push(entry.unwrap());
         }
-        self.entries[last_index].second_ref().clone()
+        self.entries.get(last_index).ref1().clone()
     }
 
-    pub fn iter<'a>(&'a self) -> VecIterator<'a,(K,V)> {
+    pub fn iter<'a>(&'a self) -> Items<'a,(K,V)> {
         self.entries.iter()
     }
 }
@@ -175,7 +178,7 @@ impl<K: Clone + Eq, V: Clone> Cache<K,V> for LRUCache<K,V> {
 }
 
 pub struct SimpleHashCache<K,V> {
-    entries: ~[Option<(K,V)>],
+    entries: Vec<Option<(K,V)>>,
     k0: u64,
     k1: u64,
 }
@@ -184,7 +187,7 @@ impl<K:Clone+Eq+Hash,V:Clone> SimpleHashCache<K,V> {
     pub fn new(cache_size: uint) -> SimpleHashCache<K,V> {
         let mut r = rand::task_rng();
         SimpleHashCache {
-            entries: vec::from_elem(cache_size, None),
+            entries: Vec::from_elem(cache_size, None),
             k0: r.gen(),
             k1: r.gen(),
         }
@@ -197,14 +200,14 @@ impl<K:Clone+Eq+Hash,V:Clone> SimpleHashCache<K,V> {
 
     #[inline]
     fn bucket_for_key<Q:Hash>(&self, key: &Q) -> uint {
-        self.to_bucket(key.hash_keyed(self.k0, self.k1) as uint)
+        self.to_bucket(sip::hash_with_keys(self.k0, self.k1, key) as uint)
     }
 
     #[inline]
     pub fn find_equiv<'a,Q:Hash+Equiv<K>>(&'a self, key: &Q) -> Option<&'a V> {
         let bucket_index = self.bucket_for_key(key);
-        match self.entries[bucket_index] {
-            Some((ref existing_key, ref value)) if key.equiv(existing_key) => Some(value),
+        match self.entries.get(bucket_index) {
+            &Some((ref existing_key, ref value)) if key.equiv(existing_key) => Some(value),
             _ => None,
         }
     }
@@ -213,13 +216,13 @@ impl<K:Clone+Eq+Hash,V:Clone> SimpleHashCache<K,V> {
 impl<K:Clone+Eq+Hash,V:Clone> Cache<K,V> for SimpleHashCache<K,V> {
     fn insert(&mut self, key: K, value: V) {
         let bucket_index = self.bucket_for_key(&key);
-        self.entries[bucket_index] = Some((key, value))
+        *self.entries.get_mut(bucket_index) = Some((key, value))
     }
 
     fn find(&mut self, key: &K) -> Option<V> {
         let bucket_index = self.bucket_for_key(key);
-        match self.entries[bucket_index] {
-            Some((ref existing_key, ref value)) if existing_key == key => Some((*value).clone()),
+        match self.entries.get(bucket_index) {
+            &Some((ref existing_key, ref value)) if existing_key == key => Some((*value).clone()),
             _ => None,
         }
     }
@@ -243,10 +246,10 @@ impl<K:Clone+Eq+Hash,V:Clone> Cache<K,V> for SimpleHashCache<K,V> {
 
 #[test]
 fn test_lru_cache() {
-    let one = @"one";
-    let two = @"two";
-    let three = @"three";
-    let four = @"four";
+    let one = Cell::new("one");
+    let two = Cell::new("two");
+    let three = Cell::new("three");
+    let four = Cell::new("four");
 
     // Test normal insertion.
     let mut cache = LRUCache::new(2); // (_, _) (cache is empty)

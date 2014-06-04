@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLLinkElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLLinkElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLLinkElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLLinkElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -15,108 +15,128 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLLinkElement {
-    htmlelement: HTMLElement,
+    pub htmlelement: HTMLElement,
 }
 
 impl HTMLLinkElementDerived for EventTarget {
     fn is_htmllinkelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLLinkElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLLinkElementTypeId))
     }
 }
 
 impl HTMLLinkElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLLinkElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLLinkElement {
         HTMLLinkElement {
             htmlelement: HTMLElement::new_inherited(HTMLLinkElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLLinkElement> {
-        let element = HTMLLinkElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLLinkElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLLinkElement> {
+        let element = HTMLLinkElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLLinkElementBinding::Wrap)
     }
 }
 
-impl HTMLLinkElement {
-    pub fn Disabled(&self) -> bool {
+pub trait HTMLLinkElementMethods {
+    fn Disabled(&self) -> bool;
+    fn SetDisabled(&mut self, _disable: bool);
+    fn Href(&self) -> DOMString;
+    fn SetHref(&mut self, _href: DOMString) -> ErrorResult;
+    fn CrossOrigin(&self) -> DOMString;
+    fn SetCrossOrigin(&mut self, _cross_origin: DOMString) -> ErrorResult;
+    fn Rel(&self) -> DOMString;
+    fn SetRel(&mut self, _rel: DOMString) -> ErrorResult;
+    fn Media(&self) -> DOMString;
+    fn SetMedia(&mut self, _media: DOMString) -> ErrorResult;
+    fn Hreflang(&self) -> DOMString;
+    fn SetHreflang(&mut self, _href: DOMString) -> ErrorResult;
+    fn Type(&self) -> DOMString;
+    fn SetType(&mut self, _type: DOMString) -> ErrorResult;
+    fn Charset(&self) -> DOMString;
+    fn SetCharset(&mut self, _charset: DOMString) -> ErrorResult;
+    fn Rev(&self) -> DOMString;
+    fn SetRev(&mut self, _rev: DOMString) -> ErrorResult;
+    fn Target(&self) -> DOMString;
+    fn SetTarget(&mut self, _target: DOMString) -> ErrorResult;
+}
+
+impl<'a> HTMLLinkElementMethods for JSRef<'a, HTMLLinkElement> {
+    fn Disabled(&self) -> bool {
         false
     }
 
-    pub fn SetDisabled(&mut self, _disable: bool) {
+    fn SetDisabled(&mut self, _disable: bool) {
     }
 
-    pub fn Href(&self) -> DOMString {
-        ~""
+    fn Href(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetHref(&mut self, _href: DOMString) -> ErrorResult {
+    fn SetHref(&mut self, _href: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn CrossOrigin(&self) -> DOMString {
-        ~""
+    fn CrossOrigin(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetCrossOrigin(&mut self, _cross_origin: DOMString) -> ErrorResult {
+    fn SetCrossOrigin(&mut self, _cross_origin: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Rel(&self) -> DOMString {
-        ~""
+    fn Rel(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetRel(&mut self, _rel: DOMString) -> ErrorResult {
+    fn SetRel(&mut self, _rel: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Media(&self) -> DOMString {
-        ~""
+    fn Media(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetMedia(&mut self, _media: DOMString) -> ErrorResult {
+    fn SetMedia(&mut self, _media: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Hreflang(&self) -> DOMString {
-        ~""
+    fn Hreflang(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetHreflang(&mut self, _href: DOMString) -> ErrorResult {
+    fn SetHreflang(&mut self, _href: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Type(&self) -> DOMString {
-        ~""
+    fn Type(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetType(&mut self, _type: DOMString) -> ErrorResult {
+    fn SetType(&mut self, _type: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Charset(&self) -> DOMString {
-        ~""
+    fn Charset(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetCharset(&mut self, _charset: DOMString) -> ErrorResult {
+    fn SetCharset(&mut self, _charset: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Rev(&self) -> DOMString {
-        ~""
+    fn Rev(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetRev(&mut self, _rev: DOMString) -> ErrorResult {
+    fn SetRev(&mut self, _rev: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Target(&self) -> DOMString {
-        ~""
+    fn Target(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetTarget(&mut self, _target: DOMString) -> ErrorResult {
+    fn SetTarget(&mut self, _target: DOMString) -> ErrorResult {
         Ok(())
     }
 }

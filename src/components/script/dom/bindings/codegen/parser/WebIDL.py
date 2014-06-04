@@ -384,7 +384,7 @@ class IDLObjectWithIdentifier(IDLObject):
             identifier = attr.identifier()
             value = attr.value()
             if identifier == "TreatNullAs":
-                if not self.type.isString() or self.type.nullable():
+                if not self.type.isDOMString() or self.type.nullable():
                     raise WebIDLError("[TreatNullAs] is only allowed on "
                                       "arguments or attributes whose type is "
                                       "DOMString",
@@ -398,7 +398,7 @@ class IDLObjectWithIdentifier(IDLObject):
                                       [self.location])
                 self.treatNullAs = value
             elif identifier == "TreatUndefinedAs":
-                if not self.type.isString():
+                if not self.type.isDOMString():
                     raise WebIDLError("[TreatUndefinedAs] is only allowed on "
                                       "arguments or attributes whose type is "
                                       "DOMString or DOMString?",
@@ -450,41 +450,8 @@ class IDLIdentifierPlaceholder(IDLObjectWithIdentifier):
 
 class IDLExternalInterface(IDLObjectWithIdentifier):
     def __init__(self, location, parentScope, identifier):
-        assert isinstance(identifier, IDLUnresolvedIdentifier)
-        assert isinstance(parentScope, IDLScope)
-        self.parent = None
-        IDLObjectWithIdentifier.__init__(self, location, parentScope, identifier)
-        IDLObjectWithIdentifier.resolve(self, parentScope)
-
-    def finish(self, scope):
-        pass
-
-    def validate(self):
-        pass
-
-    def isExternal(self):
-        return True
-
-    def isInterface(self):
-        return True
-
-    def isConsequential(self):
-        return False
-
-    def addExtendedAttributes(self, attrs):
-        assert len(attrs) == 0
-
-    def resolve(self, parentScope):
-        pass
-
-    def getJSImplementation(self):
-        return None
-
-    def isJSImplemented(self):
-        return False
-
-    def _getDependentObjects(self):
-        return set()
+        raise WebIDLError("Servo does not support external interfaces.",
+                          [self.location])
 
 class IDLInterface(IDLObjectWithScope):
     def __init__(self, location, parentScope, name, parent, members,
@@ -497,6 +464,10 @@ class IDLInterface(IDLObjectWithScope):
         self._callback = False
         self._finished = False
         self.members = []
+        # namedConstructors needs deterministic ordering because bindings code
+        # outputs the constructs in the order that namedConstructors enumerates
+        # them.
+        self.namedConstructors = list()
         self.implementedInterfaces = set()
         self._consequential = False
         self._isPartial = True
@@ -728,6 +699,9 @@ class IDLInterface(IDLObjectWithScope):
             # Special cased attrs
             if identifier == "TreatNonCallableAsNull":
                 raise WebIDLError("TreatNonCallableAsNull cannot be specified on interfaces",
+                                  [attr.location, self.location])
+            if identifier == "TreatNonObjectAsNull":
+                raise WebIDLError("TreatNonObjectAsNull cannot be specified on interfaces",
                                   [attr.location, self.location])
             elif identifier == "NoInterfaceObject":
                 if not attr.noArguments():
@@ -1082,11 +1056,12 @@ class IDLType(IDLObject):
         assert False # Override me!
 
     def treatNonCallableAsNull(self):
-        if not (self.nullable() and self.tag() == IDLType.Tags.callback):
-            raise WebIDLError("Type %s cannot be TreatNonCallableAsNull" % self,
-                              [self.location])
+        assert self.tag() == IDLType.Tags.callback
+        return self.nullable() and self.inner._treatNonCallableAsNull
 
-        return hasattr(self, "_treatNonCallableAsNull")
+    def treatNonObjectAsNull(self):
+        assert self.tag() == IDLType.Tags.callback
+        return self.nullable() and self.inner._treatNonObjectAsNull
 
     def markTreatNonCallableAsNull(self):
         assert not self.treatNonCallableAsNull()
@@ -1914,6 +1889,9 @@ BuiltinTypes = {
       IDLBuiltinType.Types.domstring:
           IDLBuiltinType(BuiltinLocation("<builtin type>"), "String",
                          IDLBuiltinType.Types.domstring),
+      IDLBuiltinType.Types.bytestring:
+          IDLBuiltinType(BuiltinLocation("<builtin type>"), "ByteString",
+                         IDLBuiltinType.Types.bytestring),
       IDLBuiltinType.Types.object:
           IDLBuiltinType(BuiltinLocation("<builtin type>"), "Object",
                          IDLBuiltinType.Types.object),
@@ -2219,6 +2197,7 @@ class IDLArgument(IDLObjectWithIdentifier):
         self._isComplete = False
         self.enforceRange = False
         self.clamp = False
+        self._allowTreatNonCallableAsNull = False
 
         assert not variadic or optional
 
@@ -2245,6 +2224,8 @@ class IDLArgument(IDLObjectWithIdentifier):
                     raise WebIDLError("[EnforceRange] and [Clamp] are mutually exclusive",
                                       [self.location]);
                 self.enforceRange = True
+            elif identifier == "TreatNonCallableAsNull":
+                self._allowTreatNonCallableAsNull = True
             else:
                 raise WebIDLError("Unhandled extended attribute on an argument",
                                   [attribute.location])
@@ -2277,6 +2258,9 @@ class IDLArgument(IDLObjectWithIdentifier):
                                                                self.location)
             assert self.defaultValue
 
+    def allowTreatNonCallableAsNull(self):
+        return self._allowTreatNonCallableAsNull
+
     def _getDependentObjects(self):
         deps = set([self.type])
         if self.defaultValue:
@@ -2298,6 +2282,12 @@ class IDLCallbackType(IDLType, IDLObjectWithScope):
         for (returnType, arguments) in self.signatures():
             for argument in arguments:
                 argument.resolve(self)
+
+        self._treatNonCallableAsNull = False
+        self._treatNonObjectAsNull = False
+
+    def module(self):
+        return self.location.filename().split('/')[-1].split('.webidl')[0] + 'Binding'
 
     def isCallback(self):
         return True
@@ -2337,6 +2327,21 @@ class IDLCallbackType(IDLType, IDLObjectWithScope):
             return other.isDistinguishableFrom(self)
         return (other.isPrimitive() or other.isString() or other.isEnum() or
                 other.isNonCallbackInterface() or other.isDate())
+
+    def addExtendedAttributes(self, attrs):
+        unhandledAttrs = []
+        for attr in attrs:
+            if attr.identifier() == "TreatNonCallableAsNull":
+                self._treatNonCallableAsNull = True
+            elif attr.identifier() == "TreatNonObjectAsNull":
+                self._treatNonObjectAsNull = True
+            else:
+                unhandledAttrs.append(attr)
+        if self._treatNonCallableAsNull and self._treatNonObjectAsNull:
+            raise WebIDLError("Cannot specify both [TreatNonCallableAsNull] "
+                              "and [TreatNonObjectAsNull]", [self.location])
+        if len(unhandledAttrs) != 0:
+            IDLType.addExtendedAttributes(self, unhandledAttrs)
 
     def _getDependentObjects(self):
         return set([self._returnType] + self._arguments)
@@ -2824,6 +2829,7 @@ class Tokenizer(object):
         "::": "SCOPE",
         "Date": "DATE",
         "DOMString": "DOMSTRING",
+        "ByteString": "BYTESTRING",
         "any": "ANY",
         "boolean": "BOOLEAN",
         "byte": "BYTE",
@@ -3354,8 +3360,8 @@ class Parser(Tokenizer):
             if len(arguments) != 0:
                 raise WebIDLError("stringifier has wrong number of arguments",
                                   [self.getLocation(p, 2)])
-            if not returnType.isString():
-                raise WebIDLError("stringifier must have string return type",
+            if not returnType.isDOMString():
+                raise WebIDLError("stringifier must have DOMString return type",
                                   [self.getLocation(p, 2)])
 
         inOptionalArguments = False
@@ -3623,6 +3629,7 @@ class Parser(Tokenizer):
                   | QUESTIONMARK
                   | DATE
                   | DOMSTRING
+                  | BYTESTRING
                   | ANY
                   | ATTRIBUTE
                   | BOOLEAN
@@ -3845,6 +3852,12 @@ class Parser(Tokenizer):
             PrimitiveOrStringType : DOMSTRING
         """
         p[0] = IDLBuiltinType.Types.domstring
+
+    def p_PrimitiveOrStringTypeBytestring(self, p):
+        """
+            PrimitiveOrStringType : BYTESTRING
+        """
+        p[0] = IDLBuiltinType.Types.bytestring
 
     def p_UnsignedIntegerTypeUnsigned(self, p):
         """

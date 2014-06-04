@@ -2,10 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use extra::arc::Arc;
+use collections::hashmap::HashMap;
 use std::ascii::StrAsciiExt;
-use std::hashmap::HashMap;
-use std::to_bytes;
+use std::hash::Hash;
+use std::hash::sip::SipState;
+use num::div_rem;
+use sync::Arc;
 
 use servo_util::namespace;
 use servo_util::smallvec::SmallVec;
@@ -38,22 +40,21 @@ impl<'a> Equiv<DOMString> for LowercaseAsciiString<'a> {
     }
 }
 
-impl<'a> IterBytes for LowercaseAsciiString<'a> {
+impl<'a> Hash for LowercaseAsciiString<'a> {
     #[inline]
-    fn iter_bytes(&self, _: bool, f: to_bytes::Cb) -> bool {
-        for b in self.bytes() {
+    fn hash(&self, state: &mut SipState) {
+        let LowercaseAsciiString(this) = *self;
+        for b in this.bytes() {
             // FIXME(pcwalton): This is a nasty hack for performance. We temporarily violate the
             // `Ascii` type's invariants by using `to_ascii_nocheck`, but it's OK as we simply
             // convert to a byte afterward.
             unsafe {
-                if !f([ b.to_ascii_nocheck().to_lower().to_byte() ]) {
-                    return false
-                }
-            }
+                state.write_u8(b.to_ascii_nocheck().to_lower().to_byte()).unwrap()
+            };
         }
         // Terminate the string with a non-UTF-8 character, to match what the built-in string
         // `ToBytes` implementation does. (See `libstd/to_bytes.rs`.)
-        f([ 0xff ])
+        state.write_u8(0xff).unwrap();
     }
 }
 
@@ -79,11 +80,11 @@ impl<'a> IterBytes for LowercaseAsciiString<'a> {
 struct SelectorMap {
     // TODO: Tune the initial capacity of the HashMap
     // FIXME: Use interned strings
-    id_hash: HashMap<DOMString, ~[Rule]>,
-    class_hash: HashMap<DOMString, ~[Rule]>,
-    element_hash: HashMap<DOMString, ~[Rule]>,
+    id_hash: HashMap<DOMString, Vec<Rule>>,
+    class_hash: HashMap<DOMString, Vec<Rule>>,
+    element_hash: HashMap<DOMString, Vec<Rule>>,
     // For Rules that don't have ID, class, or element selectors.
-    universal_rules: ~[Rule],
+    universal_rules: Vec<Rule>,
     /// Whether this hash is empty.
     empty: bool,
 }
@@ -94,7 +95,7 @@ impl SelectorMap {
             id_hash: HashMap::new(),
             class_hash: HashMap::new(),
             element_hash: HashMap::new(),
-            universal_rules: ~[],
+            universal_rules: vec!(),
             empty: true,
         }
     }
@@ -116,44 +117,43 @@ impl SelectorMap {
 
         // At the end, we're going to sort the rules that we added, so remember where we began.
         let init_len = matching_rules_list.len();
-        node.with_element(|element: &E| {
-            match element.get_attr(&namespace::Null, "id") {
-                Some(id) => {
+        let element = node.as_element();
+        match element.get_attr(&namespace::Null, "id") {
+            Some(id) => {
+                SelectorMap::get_matching_rules_from_hash(node,
+                                                            &self.id_hash,
+                                                            id,
+                                                            matching_rules_list,
+                                                            shareable)
+            }
+            None => {}
+        }
+
+        match element.get_attr(&namespace::Null, "class") {
+            Some(ref class_attr) => {
+                for class in class_attr.split(SELECTOR_WHITESPACE) {
                     SelectorMap::get_matching_rules_from_hash(node,
-                                                              &self.id_hash,
-                                                              id,
-                                                              matching_rules_list,
-                                                              shareable)
+                                                                &self.class_hash,
+                                                                class,
+                                                                matching_rules_list,
+                                                                shareable);
                 }
-                None => {}
             }
+            None => {}
+        }
 
-            match element.get_attr(&namespace::Null, "class") {
-                Some(ref class_attr) => {
-                    for class in class_attr.split(SELECTOR_WHITESPACE) {
-                        SelectorMap::get_matching_rules_from_hash(node,
-                                                                  &self.class_hash,
-                                                                  class,
-                                                                  matching_rules_list,
-                                                                  shareable);
-                    }
-                }
-                None => {}
-            }
+        // HTML elements in HTML documents must be matched case-insensitively.
+        // TODO(pradeep): Case-sensitivity depends on the document type.
+        SelectorMap::get_matching_rules_from_hash_ignoring_case(node,
+                                                                &self.element_hash,
+                                                                element.get_local_name(),
+                                                                matching_rules_list,
+                                                                shareable);
 
-            // HTML elements in HTML documents must be matched case-insensitively.
-            // TODO(pradeep): Case-sensitivity depends on the document type.
-            SelectorMap::get_matching_rules_from_hash_ignoring_case(node,
-                                                                    &self.element_hash,
-                                                                    element.get_local_name(),
-                                                                    matching_rules_list,
-                                                                    shareable);
-
-            SelectorMap::get_matching_rules(node,
-                                            self.universal_rules,
-                                            matching_rules_list,
-                                            shareable);
-        });
+        SelectorMap::get_matching_rules(node,
+                                        self.universal_rules.as_slice(),
+                                        matching_rules_list,
+                                        shareable);
 
         // Sort only the rules we just added.
         sort::quicksort(matching_rules_list.mut_slice_from(init_len));
@@ -163,13 +163,13 @@ impl SelectorMap {
                                     N:TNode<E>,
                                     V:SmallVec<MatchedProperty>>(
                                     node: &N,
-                                    hash: &HashMap<DOMString,~[Rule]>,
+                                    hash: &HashMap<DOMString, Vec<Rule>>,
                                     key: &str,
                                     matching_rules: &mut V,
                                     shareable: &mut bool) {
         match hash.find_equiv(&key) {
             Some(rules) => {
-                SelectorMap::get_matching_rules(node, *rules, matching_rules, shareable)
+                SelectorMap::get_matching_rules(node, rules.as_slice(), matching_rules, shareable)
             }
             None => {}
         }
@@ -179,13 +179,13 @@ impl SelectorMap {
                                                   N:TNode<E>,
                                                   V:SmallVec<MatchedProperty>>(
                                                   node: &N,
-                                                  hash: &HashMap<DOMString,~[Rule]>,
+                                                  hash: &HashMap<DOMString, Vec<Rule>>,
                                                   key: &str,
                                                   matching_rules: &mut V,
                                                   shareable: &mut bool) {
         match hash.find_equiv(&LowercaseAsciiString(key)) {
             Some(rules) => {
-                SelectorMap::get_matching_rules(node, *rules, matching_rules, shareable)
+                SelectorMap::get_matching_rules(node, rules.as_slice(), matching_rules, shareable)
             }
             None => {}
         }
@@ -200,7 +200,7 @@ impl SelectorMap {
                           matching_rules: &mut V,
                           shareable: &mut bool) {
         for rule in rules.iter() {
-            if matches_compound_selector(rule.selector.get(), node, shareable) {
+            if matches_compound_selector(&*rule.selector, node, shareable) {
                 // TODO(pradeep): Is the cloning inefficient?
                 matching_rules.push(rule.property.clone());
             }
@@ -221,7 +221,7 @@ impl SelectorMap {
                     }
                     None => {}
                 }
-                self.id_hash.insert(id_name, ~[rule]);
+                self.id_hash.insert(id_name, vec!(rule));
                 return;
             }
             None => {}
@@ -235,7 +235,7 @@ impl SelectorMap {
                     }
                     None => {}
                 }
-                self.class_hash.insert(class_name, ~[rule]);
+                self.class_hash.insert(class_name, vec!(rule));
                 return;
             }
             None => {}
@@ -250,7 +250,7 @@ impl SelectorMap {
                     }
                     None => {}
                 }
-                self.element_hash.insert(element_name, ~[rule]);
+                self.element_hash.insert(element_name, vec!(rule));
                 return;
             }
             None => {}
@@ -261,7 +261,7 @@ impl SelectorMap {
 
     /// Retrieve the first ID name in Rule, or None otherwise.
     fn get_id_name(rule: &Rule) -> Option<~str> {
-        let simple_selector_sequence = &rule.selector.get().simple_selectors;
+        let simple_selector_sequence = &rule.selector.simple_selectors;
         for ss in simple_selector_sequence.iter() {
             match *ss {
                 // TODO(pradeep): Implement case-sensitivity based on the document type and quirks
@@ -275,7 +275,7 @@ impl SelectorMap {
 
     /// Retrieve the FIRST class name in Rule, or None otherwise.
     fn get_class_name(rule: &Rule) -> Option<~str> {
-        let simple_selector_sequence = &rule.selector.get().simple_selectors;
+        let simple_selector_sequence = &rule.selector.simple_selectors;
         for ss in simple_selector_sequence.iter() {
             match *ss {
                 // TODO(pradeep): Implement case-sensitivity based on the document type and quirks
@@ -289,7 +289,7 @@ impl SelectorMap {
 
     /// Retrieve the name if it is a type selector, or None otherwise.
     fn get_element_name(rule: &Rule) -> Option<~str> {
-        let simple_selector_sequence = &rule.selector.get().simple_selectors;
+        let simple_selector_sequence = &rule.selector.simple_selectors;
         for ss in simple_selector_sequence.iter() {
             match *ss {
                 // HTML elements in HTML documents must be matched case-insensitively
@@ -303,10 +303,10 @@ impl SelectorMap {
 }
 
 pub struct Stylist {
-    priv element_map: PerPseudoElementSelectorMap,
-    priv before_map: PerPseudoElementSelectorMap,
-    priv after_map: PerPseudoElementSelectorMap,
-    priv rules_source_order: uint,
+    element_map: PerPseudoElementSelectorMap,
+    before_map: PerPseudoElementSelectorMap,
+    after_map: PerPseudoElementSelectorMap,
+    rules_source_order: uint,
 }
 
 impl Stylist {
@@ -338,12 +338,13 @@ impl Stylist {
                 &mut self.after_map.user,
             ),
         };
+        let mut rules_source_order = self.rules_source_order;
 
         // Take apart the StyleRule into individual Rules and insert
         // them into the SelectorMap of that priority.
         macro_rules! append(
             ($priority: ident) => {
-                if style_rule.declarations.$priority.get().len() > 0 {
+                if style_rule.declarations.$priority.len() > 0 {
                     for selector in style_rule.selectors.iter() {
                         let map = match selector.pseudo_element {
                             None => &mut element_map,
@@ -355,7 +356,7 @@ impl Stylist {
                                 property: MatchedProperty {
                                     specificity: selector.specificity,
                                     declarations: style_rule.declarations.$priority.clone(),
-                                    source_order: self.rules_source_order,
+                                    source_order: rules_source_order,
                                 },
                         });
                     }
@@ -367,8 +368,9 @@ impl Stylist {
         iter_style_rules(stylesheet.rules.as_slice(), device, |style_rule| {
             append!(normal);
             append!(important);
-            self.rules_source_order += 1;
+            rules_source_order += 1;
         });
+        self.rules_source_order = rules_source_order;
     }
 
     /// Returns the applicable CSS declarations for the given element. This corresponds to
@@ -479,14 +481,14 @@ struct Rule {
 /// we can sort them.
 #[deriving(Clone)]
 pub struct MatchedProperty {
-    declarations: Arc<~[PropertyDeclaration]>,
+    pub declarations: Arc<Vec<PropertyDeclaration>>,
     source_order: uint,
     specificity: u32,
 }
 
 impl MatchedProperty {
     #[inline]
-    pub fn from_declarations(declarations: Arc<~[PropertyDeclaration]>) -> MatchedProperty {
+    pub fn from_declarations(declarations: Arc<Vec<PropertyDeclaration>>) -> MatchedProperty {
         MatchedProperty {
             declarations: declarations,
             source_order: 0,
@@ -525,19 +527,80 @@ fn matches_compound_selector<E:TElement,
                              element: &N,
                              shareable: &mut bool)
                              -> bool {
+    match matches_compound_selector_internal(selector, element, shareable) {
+        Matched => true,
+        _ => false
+    }
+}
+
+/// A result of selector matching, includes 3 failure types,
+///
+///     NotMatchedAndRestartFromClosestLaterSibling
+///     NotMatchedAndRestartFromClosestDescendant
+///     NotMatchedGlobally
+///
+/// When NotMatchedGlobally appears, stop selector matching completely since
+/// the succeeding selectors never matches.
+/// It is raised when
+///     Child combinator cannot find the candidate element.
+///     Descendant combinator cannot find the candidate element.
+///
+/// When NotMatchedAndRestartFromClosestDescendant appears, the selector
+/// matching does backtracking and restarts from the closest Descendant
+/// combinator.
+/// It is raised when
+///     NextSibling combinator cannot find the candidate element.
+///     LaterSibling combinator cannot find the candidate element.
+///     Child combinator doesn't match on the found element.
+///
+/// When NotMatchedAndRestartFromClosestLaterSibling appears, the selector
+/// matching does backtracking and restarts from the closest LaterSibling
+/// combinator.
+/// It is raised when
+///     NextSibling combinator doesn't match on the found element.
+///
+/// For example, when the selector "d1 d2 a" is provided and we cannot *find*
+/// an appropriate ancestor node for "d1", this selector matching raises
+/// NotMatchedGlobally since even if "d2" is moved to more upper node, the
+/// candidates for "d1" becomes less than before and d1 .
+///
+/// The next example is siblings. When the selector "b1 + b2 ~ d1 a" is
+/// providied and we cannot *find* an appropriate brother node for b1,
+/// the selector matching raises NotMatchedAndRestartFromClosestDescendant.
+/// The selectors ("b1 + b2 ~") doesn't match and matching restart from "d1".
+///
+/// The additional example is child and sibling. When the selector
+/// "b1 + c1 > b2 ~ d1 a" is provided and the selector "b1" doesn't match on
+/// the element, this "b1" raises NotMatchedAndRestartFromClosestLaterSibling.
+/// However since the selector "c1" raises
+/// NotMatchedAndRestartFromClosestDescendant. So the selector
+/// "b1 + c1 > b2 ~ " doesn't match and restart matching from "d1".
+enum SelectorMatchingResult {
+    Matched,
+    NotMatchedAndRestartFromClosestLaterSibling,
+    NotMatchedAndRestartFromClosestDescendant,
+    NotMatchedGlobally,
+}
+
+fn matches_compound_selector_internal<E:TElement,
+                                      N:TNode<E>>(
+                                      selector: &CompoundSelector,
+                                      element: &N,
+                                      shareable: &mut bool)
+                                      -> SelectorMatchingResult {
     if !selector.simple_selectors.iter().all(|simple_selector| {
             matches_simple_selector(simple_selector, element, shareable)
     }) {
-        return false
+        return NotMatchedAndRestartFromClosestLaterSibling
     }
     match selector.next {
-        None => true,
+        None => Matched,
         Some((ref next_selector, combinator)) => {
-            let (siblings, just_one) = match combinator {
-                Child => (false, true),
-                Descendant => (false, false),
-                NextSibling => (true, true),
-                LaterSibling => (true, false),
+            let (siblings, candidate_not_found) = match combinator {
+                Child => (false, NotMatchedGlobally),
+                Descendant => (false, NotMatchedGlobally),
+                NextSibling => (true, NotMatchedAndRestartFromClosestDescendant),
+                LaterSibling => (true, NotMatchedAndRestartFromClosestDescendant),
             };
             let mut node = (*element).clone();
             loop {
@@ -547,14 +610,37 @@ fn matches_compound_selector<E:TElement,
                     node.parent_node()
                 };
                 match next_node {
-                    None => return false,
+                    None => return candidate_not_found,
                     Some(next_node) => node = next_node,
                 }
                 if node.is_element() {
-                    if matches_compound_selector(&**next_selector, &node, shareable) {
-                        return true
-                    } else if just_one {
-                        return false
+                    let result = matches_compound_selector_internal(&**next_selector,
+                                                                    &node,
+                                                                    shareable);
+                    match (result, combinator) {
+                        // Return the status immediately.
+                        (Matched, _) => return result,
+                        (NotMatchedGlobally, _) => return result,
+
+                        // Upgrade the failure status to
+                        // NotMatchedAndRestartFromClosestDescendant.
+                        (_, Child) => return NotMatchedAndRestartFromClosestDescendant,
+
+                        // Return the status directly.
+                        (_, NextSibling) => return result,
+
+                        // If the failure status is NotMatchedAndRestartFromClosestDescendant
+                        // and combinator is LaterSibling, give up this LaterSibling matching
+                        // and restart from the closest descendant combinator.
+                        (NotMatchedAndRestartFromClosestDescendant, LaterSibling) => return result,
+
+                        // The Descendant combinator and the status is
+                        // NotMatchedAndRestartFromClosestLaterSibling or
+                        // NotMatchedAndRestartFromClosestDescendant,
+                        // or the LaterSibling combinator and the status is
+                        // NotMatchedAndRestartFromClosestDescendant
+                        // can continue to matching on the next candidate element.
+                        _ => {},
                     }
                 }
             }
@@ -579,36 +665,32 @@ fn matches_simple_selector<E:TElement,
         // TODO: case-sensitivity depends on the document type
         // TODO: intern element names
         LocalNameSelector(ref name) => {
-            element.with_element(|element: &E| {
-                element.get_local_name().eq_ignore_ascii_case(name.as_slice())
-            })
+            let element = element.as_element();
+            element.get_local_name().eq_ignore_ascii_case(name.as_slice())
         }
 
         NamespaceSelector(ref namespace) => {
             *shareable = false;
-            element.with_element(|element: &E| {
-                element.get_namespace() == namespace
-            })
+            let element = element.as_element();
+            element.get_namespace() == namespace
         }
         // TODO: case-sensitivity depends on the document type and quirks mode
         // TODO: cache and intern IDs on elements.
         IDSelector(ref id) => {
             *shareable = false;
-            element.with_element(|element: &E| {
-                element.get_attr(&namespace::Null, "id")
-                       .map_default(false, |attr| {
-                    attr == *id
-                })
+            let element = element.as_element();
+            element.get_attr(&namespace::Null, "id")
+                    .map_or(false, |attr| {
+                attr == *id
             })
         }
         // TODO: cache and intern class names on elements.
         ClassSelector(ref class) => {
-            element.with_element(|element: &E| {
-                element.get_attr(&namespace::Null, "class")
-                       .map_default(false, |attr| {
-                    // TODO: case-sensitivity depends on the document type and quirks mode
-                    attr.split(SELECTOR_WHITESPACE).any(|c| c == class.as_slice())
-                })
+            let element = element.as_element();
+            element.get_attr(&namespace::Null, "class")
+                    .map_or(false, |attr| {
+                // TODO: case-sensitivity depends on the document type and quirks mode
+                attr.split(SELECTOR_WHITESPACE).any(|c| c == class.as_slice())
             })
         }
 
@@ -660,34 +742,30 @@ fn matches_simple_selector<E:TElement,
 
         AnyLink => {
             *shareable = false;
-            element.with_element(|element: &E| {
-                element.get_link().is_some()
-            })
+            let element = element.as_element();
+            element.get_link().is_some()
         }
         Link => {
             *shareable = false;
-            element.with_element(|element: &E| {
-                match element.get_link() {
-                    Some(url) => !url_is_visited(url),
-                    None => false,
-                }
-            })
+            let elem = element.as_element();
+            match elem.get_link() {
+                Some(url) => !url_is_visited(url),
+                None => false,
+            }
         }
         Visited => {
             *shareable = false;
-            element.with_element(|element: &E| {
-                match element.get_link() {
-                    Some(url) => url_is_visited(url),
-                    None => false,
-                }
-            })
+            let elem = element.as_element();
+            match elem.get_link() {
+                Some(url) => url_is_visited(url),
+                None => false,
+            }
         }
 
         Hover => {
             *shareable = false;
-            element.with_element(|element: &E| {
-                element.get_hover_state()
-            })
+            let elem = element.as_element();
+            elem.get_hover_state()
         },
         FirstChild => {
             *shareable = false;
@@ -788,14 +866,12 @@ fn matches_generic_nth_child<'a,
 
         if node.is_element() {
             if is_of_type {
-                element.with_element(|element: &E| {
-                    node.with_element(|node: &E| {
-                        if element.get_local_name() == node.get_local_name() &&
-                           element.get_namespace() == node.get_namespace() {
-                            index += 1;
-                        }
-                    })
-                })
+                let element = element.as_element();
+                let node = node.as_element();
+                if element.get_local_name() == node.get_local_name() &&
+                    element.get_namespace() == node.get_namespace() {
+                    index += 1;
+                }
             } else {
               index += 1;
             }
@@ -807,7 +883,7 @@ fn matches_generic_nth_child<'a,
         return b == index;
     }
 
-    let (n, r) = (index - b).div_rem(&a);
+    let (n, r) = div_rem(index - b, a);
     n >= 0 && r == 0
 }
 
@@ -866,71 +942,71 @@ fn matches_last_child<E:TElement,N:TNode<E>>(element: &N) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use extra::arc::Arc;
+    use sync::Arc;
     use super::{MatchedProperty, Rule, SelectorMap};
 
     /// Helper method to get some Rules from selector strings.
     /// Each sublist of the result contains the Rules for one StyleRule.
-    fn get_mock_rules(css_selectors: &[&str]) -> ~[~[Rule]] {
+    fn get_mock_rules(css_selectors: &[&str]) -> Vec<Vec<Rule>> {
         use namespaces::NamespaceMap;
         use selectors::parse_selector_list;
         use cssparser::tokenize;
 
         let namespaces = NamespaceMap::new();
         css_selectors.iter().enumerate().map(|(i, selectors)| {
-            parse_selector_list(tokenize(*selectors).map(|(c, _)| c).to_owned_vec(), &namespaces)
+            parse_selector_list(tokenize(*selectors).map(|(c, _)| c).collect(), &namespaces)
             .unwrap().move_iter().map(|s| {
                 Rule {
                     selector: s.compound_selectors.clone(),
                     property: MatchedProperty {
                         specificity: s.specificity,
-                        declarations: Arc::new(~[]),
+                        declarations: Arc::new(vec!()),
                         source_order: i,
                     }
                 }
-            }).to_owned_vec()
-        }).to_owned_vec()
+            }).collect()
+        }).collect()
     }
 
     #[test]
     fn test_rule_ordering_same_specificity(){
         let rules_list = get_mock_rules(["a.intro", "img.sidebar"]);
-        let rule1 = rules_list[0][0].clone();
-        let rule2 = rules_list[1][0].clone();
+        let rule1 = rules_list.get(0).get(0).clone();
+        let rule2 = rules_list.get(1).get(0).clone();
         assert!(rule1.property < rule2.property, "The rule that comes later should win.");
     }
 
     #[test]
     fn test_get_id_name(){
         let rules_list = get_mock_rules([".intro", "#top"]);
-        assert_eq!(SelectorMap::get_id_name(&rules_list[0][0]), None);
-        assert_eq!(SelectorMap::get_id_name(&rules_list[1][0]), Some(~"top"));
+        assert_eq!(SelectorMap::get_id_name(rules_list.get(0).get(0)), None);
+        assert_eq!(SelectorMap::get_id_name(rules_list.get(1).get(0)), Some("top".to_owned()));
     }
 
     #[test]
     fn test_get_class_name(){
         let rules_list = get_mock_rules([".intro.foo", "#top"]);
-        assert_eq!(SelectorMap::get_class_name(&rules_list[0][0]), Some(~"intro"));
-        assert_eq!(SelectorMap::get_class_name(&rules_list[1][0]), None);
+        assert_eq!(SelectorMap::get_class_name(rules_list.get(0).get(0)), Some("intro".to_owned()));
+        assert_eq!(SelectorMap::get_class_name(rules_list.get(1).get(0)), None);
     }
 
     #[test]
     fn test_get_element_name(){
         let rules_list = get_mock_rules(["img.foo", "#top", "IMG", "ImG"]);
-        assert_eq!(SelectorMap::get_element_name(&rules_list[0][0]), Some(~"img"));
-        assert_eq!(SelectorMap::get_element_name(&rules_list[1][0]), None);
-        assert_eq!(SelectorMap::get_element_name(&rules_list[2][0]), Some(~"img"));
-        assert_eq!(SelectorMap::get_element_name(&rules_list[3][0]), Some(~"img"));
+        assert_eq!(SelectorMap::get_element_name(rules_list.get(0).get(0)), Some("img".to_owned()));
+        assert_eq!(SelectorMap::get_element_name(rules_list.get(1).get(0)), None);
+        assert_eq!(SelectorMap::get_element_name(rules_list.get(2).get(0)), Some("img".to_owned()));
+        assert_eq!(SelectorMap::get_element_name(rules_list.get(3).get(0)), Some("img".to_owned()));
     }
 
     #[test]
     fn test_insert(){
         let rules_list = get_mock_rules([".intro.foo", "#top"]);
         let mut selector_map = SelectorMap::new();
-        selector_map.insert(rules_list[1][0].clone());
-        assert_eq!(1, selector_map.id_hash.find(&~"top").unwrap()[0].property.source_order);
-        selector_map.insert(rules_list[0][0].clone());
-        assert_eq!(0, selector_map.class_hash.find(&~"intro").unwrap()[0].property.source_order);
-        assert!(selector_map.class_hash.find(&~"foo").is_none());
+        selector_map.insert(rules_list.get(1).get(0).clone());
+        assert_eq!(1, selector_map.id_hash.find_equiv(&("top")).unwrap().get(0).property.source_order);
+        selector_map.insert(rules_list.get(0).get(0).clone());
+        assert_eq!(0, selector_map.class_hash.find_equiv(&("intro")).unwrap().get(0).property.source_order);
+        assert!(selector_map.class_hash.find_equiv(&("foo")).is_none());
     }
 }

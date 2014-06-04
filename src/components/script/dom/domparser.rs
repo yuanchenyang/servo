@@ -2,49 +2,56 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::DOMParserBinding;
-use dom::bindings::codegen::DOMParserBinding::SupportedTypeValues::{Text_html, Text_xml};
-use dom::bindings::js::JS;
+use dom::bindings::codegen::BindingDeclarations::DOMParserBinding;
+use dom::bindings::codegen::BindingDeclarations::DOMParserBinding::SupportedTypeValues::{Text_html, Text_xml};
+use dom::bindings::js::{JS, JSRef, Temporary};
 use dom::bindings::utils::{Reflector, Reflectable, reflect_dom_object};
-use dom::bindings::utils::Fallible;
-use dom::bindings::utils::FailureUnknown;
-use dom::document::{Document, HTMLDocument};
+use dom::bindings::error::{Fallible, FailureUnknown};
+use dom::document::{Document, HTMLDocument, NonHTMLDocument};
 use dom::window::Window;
 use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct DOMParser {
-    owner: JS<Window>, //XXXjdm Document instead?
-    reflector_: Reflector
+    pub owner: JS<Window>, //XXXjdm Document instead?
+    pub reflector_: Reflector
 }
 
 impl DOMParser {
-    pub fn new_inherited(owner: JS<Window>) -> DOMParser {
+    pub fn new_inherited(owner: &JSRef<Window>) -> DOMParser {
         DOMParser {
-            owner: owner,
+            owner: owner.unrooted(),
             reflector_: Reflector::new()
         }
     }
 
-    pub fn new(owner: &JS<Window>) -> JS<DOMParser> {
-        reflect_dom_object(~DOMParser::new_inherited(owner.clone()), owner.get(),
+    pub fn new(owner: &JSRef<Window>) -> Temporary<DOMParser> {
+        reflect_dom_object(box DOMParser::new_inherited(owner), owner,
                            DOMParserBinding::Wrap)
     }
 
-    pub fn Constructor(owner: &JS<Window>) -> Fallible<JS<DOMParser>> {
+    pub fn Constructor(owner: &JSRef<Window>) -> Fallible<Temporary<DOMParser>> {
         Ok(DOMParser::new(owner))
     }
+}
 
-    pub fn ParseFromString(&self,
-                           _s: DOMString,
-                           ty: DOMParserBinding::SupportedType)
-                           -> Fallible<JS<Document>> {
+pub trait DOMParserMethods {
+    fn ParseFromString(&self, _s: DOMString, ty: DOMParserBinding::SupportedType)
+        -> Fallible<Temporary<Document>>;
+}
+
+impl<'a> DOMParserMethods for JSRef<'a, DOMParser> {
+    fn ParseFromString(&self,
+                       _s: DOMString,
+                       ty: DOMParserBinding::SupportedType)
+                       -> Fallible<Temporary<Document>> {
+        let owner = self.owner.root();
         match ty {
             Text_html => {
-                Ok(Document::new(&self.owner, None, HTMLDocument, None))
+                Ok(Document::new(&owner.root_ref(), None, HTMLDocument, Some("text/html".to_owned())))
             }
             Text_xml => {
-                Document::Constructor(&self.owner)
+                Ok(Document::new(&owner.root_ref(), None, NonHTMLDocument, Some("text/xml".to_owned())))
             }
             _ => {
                 Err(FailureUnknown)

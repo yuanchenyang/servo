@@ -2,115 +2,133 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLFrameElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLFrameElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLFrameElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLFrameElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
 use dom::htmlelement::HTMLElement;
 use dom::node::{Node, ElementNodeTypeId};
-use dom::windowproxy::WindowProxy;
+use dom::window::Window;
 use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLFrameElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLFrameElementDerived for EventTarget {
     fn is_htmlframeelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLFrameElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLFrameElementTypeId))
     }
 }
 
 impl HTMLFrameElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLFrameElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLFrameElement {
         HTMLFrameElement {
             htmlelement: HTMLElement::new_inherited(HTMLFrameElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLFrameElement> {
-        let element = HTMLFrameElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLFrameElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLFrameElement> {
+        let element = HTMLFrameElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLFrameElementBinding::Wrap)
     }
 }
 
-impl HTMLFrameElement {
-    pub fn Name(&self) -> DOMString {
-        ~""
+pub trait HTMLFrameElementMethods {
+    fn Name(&self) -> DOMString;
+    fn SetName(&mut self, _name: DOMString) -> ErrorResult;
+    fn Scrolling(&self) -> DOMString;
+    fn SetScrolling(&mut self, _scrolling: DOMString) -> ErrorResult;
+    fn Src(&self) -> DOMString;
+    fn SetSrc(&mut self, _src: DOMString) -> ErrorResult;
+    fn FrameBorder(&self) -> DOMString;
+    fn SetFrameBorder(&mut self, _frameborder: DOMString) -> ErrorResult;
+    fn LongDesc(&self) -> DOMString;
+    fn SetLongDesc(&mut self, _longdesc: DOMString) -> ErrorResult;
+    fn NoResize(&self) -> bool;
+    fn SetNoResize(&mut self, _no_resize: bool) -> ErrorResult;
+    fn GetContentDocument(&self) -> Option<Temporary<Document>>;
+    fn GetContentWindow(&self) -> Option<Temporary<Window>>;
+    fn MarginHeight(&self) -> DOMString;
+    fn SetMarginHeight(&mut self, _height: DOMString) -> ErrorResult;
+    fn MarginWidth(&self) -> DOMString;
+    fn SetMarginWidth(&mut self, _height: DOMString) -> ErrorResult;
+}
+
+impl<'a> HTMLFrameElementMethods for JSRef<'a, HTMLFrameElement> {
+    fn Name(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetName(&mut self, _name: DOMString) -> ErrorResult {
+    fn SetName(&mut self, _name: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Scrolling(&self) -> DOMString {
-        ~""
+    fn Scrolling(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetScrolling(&mut self, _scrolling: DOMString) -> ErrorResult {
+    fn SetScrolling(&mut self, _scrolling: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Src(&self) -> DOMString {
-        ~""
+    fn Src(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetSrc(&mut self, _src: DOMString) -> ErrorResult {
+    fn SetSrc(&mut self, _src: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn FrameBorder(&self) -> DOMString {
-        ~""
+    fn FrameBorder(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetFrameBorder(&mut self, _frameborder: DOMString) -> ErrorResult {
+    fn SetFrameBorder(&mut self, _frameborder: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn LongDesc(&self) -> DOMString {
-        ~""
+    fn LongDesc(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetLongDesc(&mut self, _longdesc: DOMString) -> ErrorResult {
+    fn SetLongDesc(&mut self, _longdesc: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn NoResize(&self) -> bool {
+    fn NoResize(&self) -> bool {
         false
     }
 
-    pub fn SetNoResize(&mut self, _no_resize: bool) -> ErrorResult {
+    fn SetNoResize(&mut self, _no_resize: bool) -> ErrorResult {
         Ok(())
     }
 
-    pub fn GetContentDocument(&self) -> Option<JS<Document>> {
+    fn GetContentDocument(&self) -> Option<Temporary<Document>> {
         None
     }
 
-    pub fn GetContentWindow(&self) -> Option<JS<WindowProxy>> {
+    fn GetContentWindow(&self) -> Option<Temporary<Window>> {
         None
     }
 
-    pub fn MarginHeight(&self) -> DOMString {
-        ~""
+    fn MarginHeight(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetMarginHeight(&mut self, _height: DOMString) -> ErrorResult {
+    fn SetMarginHeight(&mut self, _height: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn MarginWidth(&self) -> DOMString {
-        ~""
+    fn MarginWidth(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetMarginWidth(&mut self, _height: DOMString) -> ErrorResult {
+    fn SetMarginWidth(&mut self, _height: DOMString) -> ErrorResult {
         Ok(())
     }
 }

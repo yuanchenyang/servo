@@ -13,15 +13,14 @@ use geom::point::Point2D;
 use geom::rect::Rect;
 use geom::size::Size2D;
 use layers::platform::surface::{NativeCompositingGraphicsContext, NativeGraphicsMetadata};
-use servo_msg::compositor_msg::{Epoch, RenderListener, LayerBufferSet, RenderState, ReadyState};
-use servo_msg::compositor_msg::{ScriptListener, Tile};
+use servo_msg::compositor_msg::{Epoch, LayerBufferSet, LayerId, LayerMetadata, ReadyState};
+use servo_msg::compositor_msg::{RenderListener, RenderState, ScriptListener, ScrollPolicy};
 use servo_msg::constellation_msg::{ConstellationChan, PipelineId};
 use servo_util::opts::Opts;
 use servo_util::time::ProfilerChan;
-use std::comm::{Chan, SharedChan, Port};
-use std::num::Orderable;
+use std::comm::{channel, Sender, Receiver};
 
-use extra::url::Url;
+use url::Url;
 
 #[cfg(target_os="linux")]
 use azure::azure_hl;
@@ -36,7 +35,7 @@ mod headless;
 #[deriving(Clone)]
 pub struct CompositorChan {
     /// A channel on which messages can be sent to the compositor.
-    chan: SharedChan<Msg>,
+    pub chan: Sender<Msg>,
 }
 
 /// Implementation of the abstract `ScriptListener` interface.
@@ -46,54 +45,88 @@ impl ScriptListener for CompositorChan {
         self.chan.send(msg);
     }
 
-    fn invalidate_rect(&self, id: PipelineId, rect: Rect<uint>) {
-        self.chan.send(InvalidateRect(id, rect));
-    }
-
-    fn scroll_fragment_point(&self, id: PipelineId, point: Point2D<f32>) {
-	    self.chan.send(ScrollFragmentPoint(id, point));
+    fn scroll_fragment_point(&self,
+                             pipeline_id: PipelineId,
+                             layer_id: LayerId,
+                             point: Point2D<f32>) {
+	    self.chan.send(ScrollFragmentPoint(pipeline_id, layer_id, point));
     }
 
     fn close(&self) {
-        let (port, chan) = Chan::new();
+        let (chan, port) = channel();
         self.chan.send(Exit(chan));
         port.recv();
     }
 
+    fn dup(&self) -> Box<ScriptListener> {
+        box self.clone() as Box<ScriptListener>
+    }
 }
 
 /// Implementation of the abstract `RenderListener` interface.
 impl RenderListener for CompositorChan {
     fn get_graphics_metadata(&self) -> Option<NativeGraphicsMetadata> {
-        let (port, chan) = Chan::new();
+        let (chan, port) = channel();
         self.chan.send(GetGraphicsMetadata(chan));
         port.recv()
     }
 
-    fn paint(&self, id: PipelineId, layer_buffer_set: ~LayerBufferSet, epoch: Epoch) {
-        self.chan.send(Paint(id, layer_buffer_set, epoch))
+    fn paint(&self,
+             pipeline_id: PipelineId,
+             layer_id: LayerId,
+             layer_buffer_set: Box<LayerBufferSet>,
+             epoch: Epoch) {
+        self.chan.send(Paint(pipeline_id, layer_id, layer_buffer_set, epoch))
     }
 
-    fn new_layer(&self, id: PipelineId, page_size: Size2D<uint>) {
-        let Size2D { width, height } = page_size;
-        self.chan.send(NewLayer(id, Size2D(width as f32, height as f32)))
-    }
-    fn set_layer_page_size_and_color(&self, id: PipelineId, page_size: Size2D<uint>, epoch: Epoch, color: Color) {
-        let Size2D { width, height } = page_size;
-        self.chan.send(SetUnRenderedColor(id, color));
-        self.chan.send(SetLayerPageSize(id, Size2D(width as f32, height as f32), epoch))
+    fn initialize_layers_for_pipeline(&self,
+                                      pipeline_id: PipelineId,
+                                      metadata: Vec<LayerMetadata>,
+                                      epoch: Epoch) {
+        // FIXME(#2004, pcwalton): This assumes that the first layer determines the page size, and
+        // that all other layers are immediate children of it. This is sufficient to handle
+        // `position: fixed` but will not be sufficient to handle `overflow: scroll` or transforms.
+        let mut first = true;
+        for metadata in metadata.iter() {
+            let origin = Point2D(metadata.position.origin.x as f32,
+                                 metadata.position.origin.y as f32);
+            let size = Size2D(metadata.position.size.width as f32,
+                              metadata.position.size.height as f32);
+            let rect = Rect(origin, size);
+            if first {
+                self.chan.send(CreateRootCompositorLayerIfNecessary(pipeline_id,
+                                                                    metadata.id,
+                                                                    size));
+                first = false
+            } else {
+                self.chan
+                    .send(CreateDescendantCompositorLayerIfNecessary(pipeline_id,
+                                                                     metadata.id,
+                                                                     rect,
+                                                                     metadata.scroll_policy));
+            }
+
+            self.chan.send(SetUnRenderedColor(pipeline_id,
+                                              metadata.id,
+                                              metadata.background_color));
+            self.chan.send(SetLayerPageSize(pipeline_id, metadata.id, size, epoch));
+            self.chan.send(SetLayerClipRect(pipeline_id, metadata.id, rect));
+        }
     }
 
-    fn set_layer_clip_rect(&self, id: PipelineId, new_rect: Rect<uint>) {
+    fn set_layer_clip_rect(&self,
+                           pipeline_id: PipelineId,
+                           layer_id: LayerId,
+                           new_rect: Rect<uint>) {
         let new_rect = Rect(Point2D(new_rect.origin.x as f32,
                                     new_rect.origin.y as f32),
                             Size2D(new_rect.size.width as f32,
                                    new_rect.size.height as f32));
-        self.chan.send(SetLayerClipRect(id, new_rect))
+        self.chan.send(SetLayerClipRect(pipeline_id, layer_id, new_rect))
     }
 
-    fn delete_layer(&self, id: PipelineId) {
-        self.chan.send(DeleteLayer(id))
+    fn delete_layer_group(&self, id: PipelineId) {
+        self.chan.send(DeleteLayerGroup(id))
     }
 
     fn set_render_state(&self, render_state: RenderState) {
@@ -102,8 +135,8 @@ impl RenderListener for CompositorChan {
 }
 
 impl CompositorChan {
-    pub fn new() -> (Port<Msg>, CompositorChan) {
-        let (port, chan) = SharedChan::new();
+    pub fn new() -> (Receiver<Msg>, CompositorChan) {
+        let (chan, port) = channel();
         let compositor_chan = CompositorChan {
             chan: chan,
         };
@@ -117,7 +150,7 @@ impl CompositorChan {
 /// Messages from the painting task and the constellation task to the compositor task.
 pub enum Msg {
     /// Requests that the compositor shut down.
-    Exit(Chan<()>),
+    Exit(Sender<()>),
 
     /// Informs the compositor that the constellation has completed shutdown.
     /// Required because the constellation can have pending calls to make (e.g. SetIds)
@@ -129,31 +162,32 @@ pub enum Msg {
     /// is the pixel format.
     ///
     /// The headless compositor returns `None`.
-    GetGraphicsMetadata(Chan<Option<NativeGraphicsMetadata>>),
+    GetGraphicsMetadata(Sender<Option<NativeGraphicsMetadata>>),
 
-    /// Alerts the compositor that there is a new layer to be rendered.
-    NewLayer(PipelineId, Size2D<f32>),
-    /// Alerts the compositor that the specified layer's page has changed size.
-    SetLayerPageSize(PipelineId, Size2D<f32>, Epoch),
+    /// Tells the compositor to create the root layer for a pipeline if necessary (i.e. if no layer
+    /// with that ID exists).
+    CreateRootCompositorLayerIfNecessary(PipelineId, LayerId, Size2D<f32>),
+    /// Tells the compositor to create a descendant layer for a pipeline if necessary (i.e. if no
+    /// layer with that ID exists).
+    CreateDescendantCompositorLayerIfNecessary(PipelineId, LayerId, Rect<f32>, ScrollPolicy),
+    /// Alerts the compositor that the specified layer has changed size.
+    SetLayerPageSize(PipelineId, LayerId, Size2D<f32>, Epoch),
     /// Alerts the compositor that the specified layer's clipping rect has changed.
-    SetLayerClipRect(PipelineId, Rect<f32>),
-    /// Alerts the compositor that the specified layer has been deleted.
-    DeleteLayer(PipelineId),
-    /// Invalidate a rect for a given layer
-    InvalidateRect(PipelineId, Rect<uint>),
+    SetLayerClipRect(PipelineId, LayerId, Rect<f32>),
+    /// Alerts the compositor that the specified pipeline has been deleted.
+    DeleteLayerGroup(PipelineId),
     /// Scroll a page in a window
-    ScrollFragmentPoint(PipelineId, Point2D<f32>),
+    ScrollFragmentPoint(PipelineId, LayerId, Point2D<f32>),
     /// Requests that the compositor paint the given layer buffer set for the given page size.
-    Paint(PipelineId, ~LayerBufferSet, Epoch),
+    Paint(PipelineId, LayerId, Box<LayerBufferSet>, Epoch),
     /// Alerts the compositor to the current status of page loading.
     ChangeReadyState(ReadyState),
     /// Alerts the compositor to the current status of rendering.
     ChangeRenderState(RenderState),
     /// Sets the channel to the current layout and render tasks, along with their id
-    SetIds(SendableFrameTree, Chan<()>, ConstellationChan),
-
-    SetUnRenderedColor(PipelineId, Color),
-
+    SetIds(SendableFrameTree, Sender<()>, ConstellationChan),
+    /// Sets the color of unrendered content for a layer.
+    SetUnRenderedColor(PipelineId, LayerId, Color),
     /// The load of a page for a given URL has completed.
     LoadComplete(PipelineId, Url),
 }
@@ -164,7 +198,7 @@ pub enum CompositorMode {
 }
 
 pub struct CompositorTask {
-    mode: CompositorMode,
+    pub mode: CompositorMode,
 }
 
 impl CompositorTask {
@@ -193,7 +227,7 @@ impl CompositorTask {
     }
 
     pub fn create(opts: Opts,
-                  port: Port<Msg>,
+                  port: Receiver<Msg>,
                   constellation_chan: ConstellationChan,
                   profiler_chan: ProfilerChan) {
 

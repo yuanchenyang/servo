@@ -6,24 +6,23 @@ use dom::bindings::utils::is_dom_proxy;
 use js::jsapi::{JSContext, jsid, JSPropertyDescriptor, JSObject, JSString, jschar};
 use js::jsapi::{JS_GetPropertyDescriptorById, JS_NewUCString, JS_malloc, JS_free};
 use js::jsapi::{JSBool, JS_DefinePropertyById, JS_NewObjectWithGivenProto};
-use js::glue::{RUST_JSVAL_IS_VOID, RUST_JSVAL_TO_OBJECT, GetProxyExtra, RUST_OBJECT_TO_JSVAL};
+use js::jsapi::JS_StrictPropertyStub;
+use js::jsval::ObjectValue;
+use js::glue::GetProxyExtra;
 use js::glue::{GetObjectProto, GetObjectParent, SetProxyExtra, GetProxyHandler};
 use js::glue::InvokeGetOwnPropertyDescriptor;
-use js::crust::{JS_StrictPropertyStub};
 use js::{JSPROP_GETTER, JSPROP_ENUMERATE, JSPROP_READONLY, JSRESOLVE_QUALIFIED};
 
+use libc;
 use std::cast;
-use std::libc;
 use std::ptr;
 use std::str;
 use std::mem::size_of;
 
-type c_bool = libc::c_int;
-
 static JSPROXYSLOT_EXPANDO: u32 = 0;
 
-pub extern fn getPropertyDescriptor(cx: *JSContext, proxy: *JSObject, id: jsid,
-                                set: c_bool, desc: *mut JSPropertyDescriptor) -> c_bool {
+pub extern fn getPropertyDescriptor(cx: *mut JSContext, proxy: *mut JSObject, id: jsid,
+                                set: libc::c_int, desc: *mut JSPropertyDescriptor) -> libc::c_int {
   unsafe {
     let handler = GetProxyHandler(proxy);
     if InvokeGetOwnPropertyDescriptor(handler, cx, proxy, id, set, desc) == 0 {
@@ -36,7 +35,7 @@ pub extern fn getPropertyDescriptor(cx: *JSContext, proxy: *JSObject, id: jsid,
     //let proto = JS_GetPrototype(proxy);
     let proto = GetObjectProto(proxy);
     if proto.is_null() {
-        (*desc).obj = ptr::null();
+        (*desc).obj = ptr::mut_null();
         return 1;
     }
 
@@ -44,10 +43,13 @@ pub extern fn getPropertyDescriptor(cx: *JSContext, proxy: *JSObject, id: jsid,
   }
 }
 
-pub fn defineProperty_(cx: *JSContext, proxy: *JSObject, id: jsid,
+pub fn defineProperty_(cx: *mut JSContext, proxy: *mut JSObject, id: jsid,
                        desc: *JSPropertyDescriptor) -> JSBool {
     unsafe {
-        if ((*desc).attrs & JSPROP_GETTER) != 0 && (*desc).setter == Some(JS_StrictPropertyStub) {
+        //FIXME: Workaround for https://github.com/mozilla/rust/issues/13385
+        let setter: *libc::c_void = cast::transmute((*desc).setter);
+        let setter_stub: *libc::c_void = cast::transmute(JS_StrictPropertyStub);
+        if ((*desc).attrs & JSPROP_GETTER) != 0 && setter == setter_stub {
             /*return JS_ReportErrorFlagsAndNumber(cx,
             JSREPORT_WARNING | JSREPORT_STRICT |
             JSREPORT_STRICT_MODE_ERROR,
@@ -66,63 +68,64 @@ pub fn defineProperty_(cx: *JSContext, proxy: *JSObject, id: jsid,
     }
 }
 
-pub extern fn defineProperty(cx: *JSContext, proxy: *JSObject, id: jsid,
+pub extern fn defineProperty(cx: *mut JSContext, proxy: *mut JSObject, id: jsid,
                              desc: *JSPropertyDescriptor) -> JSBool {
     defineProperty_(cx, proxy, id, desc)
 }
 
-pub fn _obj_toString(cx: *JSContext, className: *libc::c_char) -> *JSString {
+pub fn _obj_toString(cx: *mut JSContext, className: *libc::c_char) -> *mut JSString {
   unsafe {
     let name = str::raw::from_c_str(className);
     let nchars = "[object ]".len() + name.len();
-    let chars: *mut jschar = cast::transmute(JS_malloc(cx, (nchars + 1) as libc::size_t * (size_of::<jschar>() as libc::size_t)));
+    let chars: *mut jschar = JS_malloc(cx, (nchars + 1) as libc::size_t * (size_of::<jschar>() as libc::size_t)) as *mut jschar;
     if chars.is_null() {
-        return ptr::null();
+        return ptr::mut_null();
     }
 
-    let result = ~"[object " + name + "]";
+    let result = "[object ".to_owned() + name + "]";
     for (i, c) in result.chars().enumerate() {
       *chars.offset(i as int) = c as jschar;
     }
     *chars.offset(nchars as int) = 0;
-    let jsstr = JS_NewUCString(cx, cast::transmute(chars), nchars as libc::size_t);
+    let jsstr = JS_NewUCString(cx, chars, nchars as libc::size_t);
     if jsstr.is_null() {
-        JS_free(cx, cast::transmute(chars));
+        JS_free(cx, chars as *mut libc::c_void);
     }
     jsstr
   }
 }
 
-pub fn GetExpandoObject(obj: *JSObject) -> *JSObject {
+pub fn GetExpandoObject(obj: *mut JSObject) -> *mut JSObject {
     unsafe {
         assert!(is_dom_proxy(obj));
         let val = GetProxyExtra(obj, JSPROXYSLOT_EXPANDO);
-        if RUST_JSVAL_IS_VOID(val) == 1 {
-            ptr::null()
+        if val.is_undefined() {
+            ptr::mut_null()
         } else {
-            RUST_JSVAL_TO_OBJECT(val)
+            val.to_object()
         }
     }
 }
 
-pub fn EnsureExpandoObject(cx: *JSContext, obj: *JSObject) -> *JSObject {
+pub fn EnsureExpandoObject(cx: *mut JSContext, obj: *mut JSObject) -> *mut JSObject {
     unsafe {
         assert!(is_dom_proxy(obj));
         let mut expando = GetExpandoObject(obj);
         if expando.is_null() {
-            expando = JS_NewObjectWithGivenProto(cx, ptr::null(), ptr::null(),
+            expando = JS_NewObjectWithGivenProto(cx, ptr::null(),
+                                                 ptr::mut_null(),
                                                  GetObjectParent(obj));
             if expando.is_null() {
-                return ptr::null();
+                return ptr::mut_null();
             }
 
-            SetProxyExtra(obj, JSPROXYSLOT_EXPANDO, RUST_OBJECT_TO_JSVAL(expando));
+            SetProxyExtra(obj, JSPROXYSLOT_EXPANDO, ObjectValue(&*expando));
         }
         return expando;
     }
 }
 
-pub fn FillPropertyDescriptor(desc: &mut JSPropertyDescriptor, obj: *JSObject, readonly: bool) {
+pub fn FillPropertyDescriptor(desc: &mut JSPropertyDescriptor, obj: *mut JSObject, readonly: bool) {
     desc.obj = obj;
     desc.attrs = if readonly { JSPROP_READONLY } else { 0 } | JSPROP_ENUMERATE;
     desc.getter = None;

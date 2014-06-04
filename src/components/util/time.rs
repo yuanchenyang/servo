@@ -4,35 +4,22 @@
 
 //! Timing functions.
 
-use extra::time::precise_time_ns;
-use extra::treemap::TreeMap;
-use std::comm::{Port, SharedChan};
+use std_time::precise_time_ns;
+use collections::treemap::TreeMap;
+use std::comm::{Sender, channel, Receiver};
+use std::f64;
 use std::iter::AdditiveIterator;
+use std::io::timer::sleep;
 use task::{spawn_named};
-
-// TODO: This code should be changed to use the commented code that uses timers
-// directly, once native timers land in Rust.
-extern {
-    pub fn usleep(secs: u64) -> u32;
-}
-
-pub struct Timer;
-impl Timer {
-    pub fn sleep(ms: u64) {
-        //
-        //  let mut timer = Timer::new().unwrap();
-        //  timer.sleep(period);
-       unsafe { usleep((ms * 1000)); }
-    }
-}
 
 // front-end representation of the profiler used to communicate with the profiler
 #[deriving(Clone)]
-pub struct ProfilerChan(SharedChan<ProfilerMsg>);
+pub struct ProfilerChan(pub Sender<ProfilerMsg>);
 
 impl ProfilerChan {
     pub fn send(&self, msg: ProfilerMsg) {
-        (**self).send(msg);
+        let ProfilerChan(ref c) = *self;
+        c.send(msg);
     }
 }
 
@@ -45,7 +32,8 @@ pub enum ProfilerMsg {
     ExitMsg,
 }
 
-#[deriving(Eq, Clone, TotalEq, TotalOrd)]
+#[repr(u32)]
+#[deriving(Eq, Clone, Ord, TotalEq, TotalOrd)]
 pub enum ProfilerCategory {
     CompositingCategory,
     LayoutQueryCategory,
@@ -75,21 +63,21 @@ impl ProfilerCategory {
     // enumeration of all ProfilerCategory types
     fn empty_buckets() -> ProfilerBuckets {
         let mut buckets = TreeMap::new();
-        buckets.insert(CompositingCategory, ~[]);
-        buckets.insert(LayoutQueryCategory, ~[]);
-        buckets.insert(LayoutPerformCategory, ~[]);
-        buckets.insert(LayoutStyleRecalcCategory, ~[]);
-        buckets.insert(LayoutSelectorMatchCategory, ~[]);
-        buckets.insert(LayoutTreeBuilderCategory, ~[]);
-        buckets.insert(LayoutMainCategory, ~[]);
-        buckets.insert(LayoutParallelWarmupCategory, ~[]);
-        buckets.insert(LayoutShapingCategory, ~[]);
-        buckets.insert(LayoutDamagePropagateCategory, ~[]);
-        buckets.insert(LayoutDispListBuildCategory, ~[]);
-        buckets.insert(GfxRegenAvailableFontsCategory, ~[]);
-        buckets.insert(RenderingDrawingCategory, ~[]);
-        buckets.insert(RenderingPrepBuffCategory, ~[]);
-        buckets.insert(RenderingCategory, ~[]);
+        buckets.insert(CompositingCategory, vec!());
+        buckets.insert(LayoutQueryCategory, vec!());
+        buckets.insert(LayoutPerformCategory, vec!());
+        buckets.insert(LayoutStyleRecalcCategory, vec!());
+        buckets.insert(LayoutSelectorMatchCategory, vec!());
+        buckets.insert(LayoutTreeBuilderCategory, vec!());
+        buckets.insert(LayoutMainCategory, vec!());
+        buckets.insert(LayoutParallelWarmupCategory, vec!());
+        buckets.insert(LayoutShapingCategory, vec!());
+        buckets.insert(LayoutDamagePropagateCategory, vec!());
+        buckets.insert(LayoutDispListBuildCategory, vec!());
+        buckets.insert(GfxRegenAvailableFontsCategory, vec!());
+        buckets.insert(RenderingDrawingCategory, vec!());
+        buckets.insert(RenderingPrepBuffCategory, vec!());
+        buckets.insert(RenderingCategory, vec!());
 
         buckets
     }
@@ -112,26 +100,26 @@ impl ProfilerCategory {
     }
 }
 
-type ProfilerBuckets = TreeMap<ProfilerCategory, ~[f64]>;
+type ProfilerBuckets = TreeMap<ProfilerCategory, Vec<f64>>;
 
 // back end of the profiler that handles data aggregation and performance metrics
 pub struct Profiler {
-    port: Port<ProfilerMsg>,
+    pub port: Receiver<ProfilerMsg>,
     buckets: ProfilerBuckets,
-    last_msg: Option<ProfilerMsg>,
+    pub last_msg: Option<ProfilerMsg>,
 }
 
 impl Profiler {
     pub fn create(period: Option<f64>) -> ProfilerChan {
-        let (port, chan) = SharedChan::new();
+        let (chan, port) = channel();
         match period {
             Some(period) => {
                 let period = (period * 1000f64) as u64;
                 let chan = chan.clone();
                 spawn_named("Profiler timer", proc() {
                     loop {
-                        Timer::sleep(period);
-                        if !chan.try_send(PrintMsg) {
+                        sleep(period);
+                        if chan.send_opt(PrintMsg).is_err() {
                             break;
                         }
                     }
@@ -147,7 +135,7 @@ impl Profiler {
                 spawn_named("Profiler", proc() {
                     loop {
                         match port.recv_opt() {
-                            None | Some(ExitMsg) => break,
+                            Err(_) | Ok(ExitMsg) => break,
                             _ => {}
                         }
                     }
@@ -158,7 +146,7 @@ impl Profiler {
         ProfilerChan(chan)
     }
 
-    pub fn new(port: Port<ProfilerMsg>) -> Profiler {
+    pub fn new(port: Receiver<ProfilerMsg>) -> Profiler {
         Profiler {
             port: port,
             buckets: ProfilerCategory::empty_buckets(),
@@ -170,12 +158,12 @@ impl Profiler {
         loop {
             let msg = self.port.recv_opt();
             match msg {
-               Some(msg) => {
+               Ok(msg) => {
                    if !self.handle_msg(msg) {
                        break
                    }
                }
-               None => break
+               _ => break
             }
         }
     }
@@ -195,12 +183,10 @@ impl Profiler {
     }
 
     fn print_buckets(&mut self) {
-        println(format!("{:39s} {:15s} {:15s} {:15s} {:15s} {:15s}",
-                         "_category_", "_mean (ms)_", "_median (ms)_",
-                         "_min (ms)_", "_max (ms)_", "_bucket size_"));
-        for (category, data) in self.buckets.iter() {
-            // FIXME(XXX): TreeMap currently lacks mut_iter()
-            let mut data = data.clone();
+        println!("{:39s} {:15s} {:15s} {:15s} {:15s} {:15s}",
+                 "_category_", "_mean (ms)_", "_median (ms)_",
+                 "_min (ms)_", "_max (ms)_", "_bucket size_");
+        for (category, data) in self.buckets.mut_iter() {
             data.sort_by(|a, b| {
                 if a < b {
                     Less
@@ -210,28 +196,28 @@ impl Profiler {
             });
             let data_len = data.len();
             if data_len > 0 {
-                let (mean, median, &min, &max) =
+                let (mean, median, min, max) =
                     (data.iter().map(|&x|x).sum() / (data_len as f64),
-                     data[data_len / 2],
-                     data.iter().min().unwrap(),
-                     data.iter().max().unwrap());
-                println(format!("{:-35s}: {:15.4f} {:15.4f} {:15.4f} {:15.4f} {:15u}",
-                             category.format(), mean, median, min, max, data_len));
+                     *data.get(data_len / 2),
+                     data.iter().fold(f64::INFINITY, |a, &b| a.min(b)),
+                     data.iter().fold(-f64::INFINITY, |a, &b| a.max(b)));
+                println!("{:-35s}: {:15.4f} {:15.4f} {:15.4f} {:15.4f} {:15u}",
+                         category.format(), mean, median, min, max, data_len);
             }
         }
-        println("");
+        println!("");
     }
 }
 
 
-pub fn profile<T>(category: ProfilerCategory, 
+pub fn profile<T>(category: ProfilerCategory,
                   profiler_chan: ProfilerChan,
                   callback: || -> T)
                   -> T {
     let start_time = precise_time_ns();
     let val = callback();
     let end_time = precise_time_ns();
-    let ms = ((end_time - start_time) as f64 / 1000000f64);
+    let ms = (end_time - start_time) as f64 / 1000000f64;
     profiler_chan.send(TimeMsg(category, ms));
     return val;
 }
@@ -240,7 +226,7 @@ pub fn time<T>(msg: &str, callback: || -> T) -> T{
     let start_time = precise_time_ns();
     let val = callback();
     let end_time = precise_time_ns();
-    let ms = ((end_time - start_time) as f64 / 1000000f64);
+    let ms = (end_time - start_time) as f64 / 1000000f64;
     if ms >= 5f64 {
         debug!("{:s} took {} ms", msg, ms);
     }

@@ -50,17 +50,8 @@ interface Node : EventTarget {
            attribute DOMString? nodeValue;
   [SetterThrows, Pure]
            attribute DOMString? textContent;
-  [Throws]
-  Node insertBefore(Node node, Node? child);
-  [Throws]
-  Node appendChild(Node node);
-  [Throws]
-  Node replaceChild(Node node, Node child);
-  [Throws]
-  Node removeChild(Node child);
   void normalize();
 
-  [Throws]
   Node cloneNode(optional boolean deep = true);
   boolean isEqualNode(Node? node);
 
@@ -69,7 +60,7 @@ interface Node : EventTarget {
   const unsigned short DOCUMENT_POSITION_FOLLOWING = 0x04;
   const unsigned short DOCUMENT_POSITION_CONTAINS = 0x08;
   const unsigned short DOCUMENT_POSITION_CONTAINED_BY = 0x10;
-  const unsigned short DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 0x20; // historical
+  const unsigned short DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 0x20;
   unsigned short compareDocumentPosition(Node other);
   boolean contains(Node? other);
 
@@ -77,16 +68,12 @@ interface Node : EventTarget {
   DOMString? lookupNamespaceURI(DOMString? prefix);
   boolean isDefaultNamespace(DOMString? namespace);
 
-  // Mozilla-specific stuff
-  // These have been moved to Element in the spec.
-  // If we move namespaceURI, prefix and localName to Element they should return
-  // a non-nullable type.
-  [Constant]
-  readonly attribute DOMString? namespaceURI;
-  [Constant]
-  readonly attribute DOMString? prefix;
-  [Constant]
-  readonly attribute DOMString? localName;
-
-  boolean hasAttributes();
+  [Throws]
+  Node insertBefore(Node node, Node? child);
+  [Throws]
+  Node appendChild(Node node);
+  [Throws]
+  Node replaceChild(Node node, Node child);
+  [Throws]
+  Node removeChild(Node child);
 };

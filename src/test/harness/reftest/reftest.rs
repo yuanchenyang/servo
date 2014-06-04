@@ -7,28 +7,29 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern mod extra;
-extern mod png;
-extern mod std;
+extern crate png;
+extern crate std;
+extern crate test;
 
 use std::io;
-use std::io::{File, Reader};
+use std::io::{File, Reader, Process};
 use std::io::process::ExitStatus;
 use std::os;
-use std::run::{Process, ProcessOptions};
-use std::str;
-use extra::test::{DynTestName, DynTestFn, TestDesc, TestOpts, TestDescAndFn};
-use extra::test::run_tests_console;
+use test::{DynTestName, DynTestFn, TestDesc, TestOpts, TestDescAndFn};
+use test::run_tests_console;
 
 fn main() {
     let args = os::args();
-    if args.len() < 2 {
-        println("error: at least one reftest list must be given");
-        os::set_exit_status(1);
-        return;
+    let mut parts = args.tail().split(|e| "--" == e.as_slice());
+
+    let files = parts.next().unwrap();  // .split() is never empty
+    let servo_args = parts.next().unwrap_or(&[]);
+
+    if files.len() == 0 {
+        fail!("error: at least one reftest list must be given");
     }
 
-    let tests = parse_lists(args.tail());
+    let tests = parse_lists(files, servo_args);
     let test_opts = TestOpts {
         filter: None,
         run_ignored: false,
@@ -39,10 +40,13 @@ fn main() {
         ratchet_metrics: None,
         save_metrics: None,
         test_shard: None,
+        nocapture: false,
     };
 
-    if !run_tests_console(&test_opts, tests) {
-        os::set_exit_status(1);
+    match run_tests_console(&test_opts, tests) {
+        Ok(false) => os::set_exit_status(1), // tests failed
+        Err(_) => os::set_exit_status(2),    // I/O-related failure
+        _ => (),
     }
 }
 
@@ -55,20 +59,23 @@ enum ReftestKind {
 struct Reftest {
     name: ~str,
     kind: ReftestKind,
-    left: ~str,
-    right: ~str,
+    files: [~str, ..2],
     id: uint,
+    servo_args: Vec<~str>,
 }
 
-fn parse_lists(filenames: &[~str]) -> ~[TestDescAndFn] {
-    let mut tests: ~[TestDescAndFn] = ~[];
+fn parse_lists(filenames: &[~str], servo_args: &[~str]) -> Vec<TestDescAndFn> {
+    let mut tests = Vec::new();
     let mut next_id = 0;
     for file in filenames.iter() {
         let file_path = Path::new(file.clone());
-        let contents = match File::open_mode(&file_path, io::Open, io::Read) {
-            Some(mut f) => str::from_utf8_owned(f.read_to_end()),
-            None => fail!("Could not open file")
-        };
+        let contents = match File::open_mode(&file_path, io::Open, io::Read)
+            .and_then(|mut f| {
+                f.read_to_str()
+            }) {
+                Ok(s) => s,
+                _ => fail!("Could not read file"),
+            };
 
         for line in contents.lines() {
             // ignore comments
@@ -76,29 +83,29 @@ fn parse_lists(filenames: &[~str]) -> ~[TestDescAndFn] {
                 continue;
             }
 
-            let parts: ~[&str] = line.split(' ').filter(|p| !p.is_empty()).collect();
+            let parts: Vec<&str> = line.split(' ').filter(|p| !p.is_empty()).collect();
 
             if parts.len() != 3 {
                 fail!("reftest line: '{:s}' doesn't match 'KIND LEFT RIGHT'", line);
             }
 
-            let kind = match parts[0] {
-                "==" => Same,
-                "!=" => Different,
-                _ => fail!("reftest line: '{:s}' has invalid kind '{:s}'",
-                           line, parts[0])
+            let kind = match parts.get(0) {
+                & "==" => Same,
+                & "!=" => Different,
+                &part => fail!("reftest line: '{:s}' has invalid kind '{:s}'",
+                               line, part)
             };
             let src_path = file_path.dir_path();
             let src_dir = src_path.display().to_str();
-            let file_left =  src_dir + "/" + parts[1];
-            let file_right = src_dir + "/" + parts[2];
-            
+            let file_left =  src_dir + "/" + *parts.get(1);
+            let file_right = src_dir + "/" + *parts.get(2);
+
             let reftest = Reftest {
-                name: parts[1] + " / " + parts[2],
+                name: parts.get(1) + " / " + *parts.get(2),
                 kind: kind,
-                left: file_left,
-                right: file_right,
+                files: [file_left, file_right],
                 id: next_id,
+                servo_args: servo_args.iter().map(|x| x.clone()).collect(),
             };
 
             next_id += 1;
@@ -123,28 +130,28 @@ fn make_test(reftest: Reftest) -> TestDescAndFn {
     }
 }
 
+fn capture(reftest: &Reftest, side: uint) -> png::Image {
+    let filename = format!("/tmp/servo-reftest-{:06u}-{:u}.png", reftest.id, side);
+    let mut args = reftest.servo_args.clone();
+    args.push_all_move(vec!("-f".to_owned(), "-o".to_owned(), filename.clone(), reftest.files[side].clone()));
+
+    let retval = match Process::status("./servo", args.as_slice()) {
+        Ok(status) => status,
+        Err(e) => fail!("failed to execute process: {}", e),
+    };
+    assert!(retval == ExitStatus(0));
+
+    png::load_png(&from_str::<Path>(filename).unwrap()).unwrap()
+}
+
 fn check_reftest(reftest: Reftest) {
-    let left_filename = format!("/tmp/servo-reftest-{:06u}-left.png", reftest.id);
-    let right_filename = format!("/tmp/servo-reftest-{:06u}-right.png", reftest.id);
+    let left  = capture(&reftest, 0);
+    let right = capture(&reftest, 1);
 
-    let args = ~[~"-f", ~"-o", left_filename.clone(), reftest.left.clone()];
-    let mut process = Process::new("./servo", args, ProcessOptions::new()).unwrap();
-    let retval = process.finish();
-    assert!(retval == ExitStatus(0));
-
-    let args = ~[~"-f", ~"-o", right_filename.clone(), reftest.right.clone()];
-    let mut process = Process::new("./servo", args, ProcessOptions::new()).unwrap();
-    let retval = process.finish();
-    assert!(retval == ExitStatus(0));
-
-    // check the pngs are bit equal
-    let left = png::load_png(&from_str::<Path>(left_filename).unwrap()).unwrap();
-    let right = png::load_png(&from_str::<Path>(right_filename).unwrap()).unwrap();
-
-    let pixels: ~[u8] = left.pixels.iter().zip(right.pixels.iter()).map(|(&a, &b)| {
-            if (a as i8 - b as i8 == 0) {
+    let pixels: Vec<u8> = left.pixels.iter().zip(right.pixels.iter()).map(|(&a, &b)| {
+            if a as i8 - b as i8 == 0 {
                 // White for correct
-                0xFF 
+                0xFF
             } else {
                 // "1100" in the RGBA channel with an error for an incorrect value
                 // This results in some number of C0 and FFs, which is much more
@@ -155,7 +162,8 @@ fn check_reftest(reftest: Reftest) {
         }).collect();
 
     if pixels.iter().any(|&a| a < 255) {
-        let output = from_str::<Path>(format!("/tmp/servo-reftest-{:06u}-diff.png", reftest.id)).unwrap();
+        let output_str = format!("/tmp/servo-reftest-{:06u}-diff.png", reftest.id);
+        let output = from_str::<Path>(output_str).unwrap();
 
         let img = png::Image {
             width: left.width,
@@ -166,7 +174,7 @@ fn check_reftest(reftest: Reftest) {
         let res = png::store_png(&img, &output);
         assert!(res.is_ok());
 
-        assert!(reftest.kind == Different);
+        assert!(reftest.kind == Different, "rendering difference: {}", output_str);
     } else {
         assert!(reftest.kind == Same);
     }

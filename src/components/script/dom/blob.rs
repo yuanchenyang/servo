@@ -2,52 +2,60 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::js::JS;
+use dom::bindings::js::{JS, JSRef, Temporary};
 use dom::bindings::utils::{Reflectable, Reflector, reflect_dom_object};
-use dom::bindings::utils::Fallible;
-use dom::bindings::codegen::BlobBinding;
+use dom::bindings::error::Fallible;
+use dom::bindings::codegen::BindingDeclarations::BlobBinding;
 use dom::window::Window;
 use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct Blob {
-    reflector_: Reflector,
-    window: JS<Window>
+    pub reflector_: Reflector,
+    pub window: JS<Window>
 }
 
 impl Blob {
-    pub fn new_inherited(window: JS<Window>) -> Blob {
+    pub fn new_inherited(window: &JSRef<Window>) -> Blob {
         Blob {
             reflector_: Reflector::new(),
-            window: window
+            window: window.unrooted()
         }
     }
 
-    pub fn new(window: &JS<Window>) -> JS<Blob> {
-        reflect_dom_object(~Blob::new_inherited(window.clone()),
-                           window.get(),
+    pub fn new(window: &JSRef<Window>) -> Temporary<Blob> {
+        reflect_dom_object(box Blob::new_inherited(window),
+                           window,
                            BlobBinding::Wrap)
+    }
+
+    pub fn Constructor(window: &JSRef<Window>) -> Fallible<Temporary<Blob>> {
+        Ok(Blob::new(window))
     }
 }
 
-impl Blob {
-    pub fn Constructor(window: &JS<Window>) -> Fallible<JS<Blob>> {
-        Ok(Blob::new(window))
-    }
+pub trait BlobMethods {
+    fn Size(&self) -> u64;
+    fn Type(&self) -> DOMString;
+    fn Slice(&self, _start: Option<i64>, _end: Option<i64>, _contentType: Option<DOMString>) -> Temporary<Blob>;
+    fn Close(&self);
+}
 
-    pub fn Size(&self) -> u64 {
+impl<'a> BlobMethods for JSRef<'a, Blob> {
+    fn Size(&self) -> u64 {
         0
     }
 
-    pub fn Type(&self) -> DOMString {
-        ~""
+    fn Type(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn Slice(&self, _start: i64, _end: i64, _contentType: Option<DOMString>) -> JS<Blob> {
-        Blob::new(&self.window)
+    fn Slice(&self, _start: Option<i64>, _end: Option<i64>, _contentType: Option<DOMString>) -> Temporary<Blob> {
+        let window = self.window.root();
+        Blob::new(&window.root_ref())
     }
 
-    pub fn Close(&self) {}
+    fn Close(&self) {}
 }
 
 impl Reflectable for Blob {

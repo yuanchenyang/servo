@@ -9,29 +9,29 @@ use cssparser::ast::*;
 use errors::{ErrorLoggerIterator, log_css_error};
 use stylesheets::{CSSRule, CSSMediaRule, parse_style_rule, parse_nested_at_rule};
 use namespaces::NamespaceMap;
-use extra::url::Url;
+use url::Url;
 
 
 pub struct MediaRule {
-    media_queries: MediaQueryList,
-    rules: ~[CSSRule],
+    pub media_queries: MediaQueryList,
+    pub rules: Vec<CSSRule>,
 }
 
 
 pub struct MediaQueryList {
     // "not all" is omitted from the list.
     // An empty list never matches.
-    media_queries: ~[MediaQuery]
+    media_queries: Vec<MediaQuery>
 }
 
 // For now, this is a "Level 2 MQ", ie. a media type.
-struct MediaQuery {
+pub struct MediaQuery {
     media_type: MediaQueryType,
     // TODO: Level 3 MQ expressions
 }
 
 
-enum MediaQueryType {
+pub enum MediaQueryType {
     All,  // Always true
     MediaType(MediaType),
 }
@@ -43,14 +43,14 @@ pub enum MediaType {
 }
 
 pub struct Device {
-    media_type: MediaType,
+    pub media_type: MediaType,
     // TODO: Level 3 MQ data: viewport size, etc.
 }
 
 
-pub fn parse_media_rule(rule: AtRule, parent_rules: &mut ~[CSSRule],
+pub fn parse_media_rule(rule: AtRule, parent_rules: &mut Vec<CSSRule>,
                         namespaces: &NamespaceMap, base_url: &Url) {
-    let media_queries = parse_media_query_list(rule.prelude);
+    let media_queries = parse_media_query_list(rule.prelude.as_slice());
     let block = match rule.block {
         Some(block) => block,
         None => {
@@ -58,12 +58,12 @@ pub fn parse_media_rule(rule: AtRule, parent_rules: &mut ~[CSSRule],
             return
         }
     };
-    let mut rules = ~[];
+    let mut rules = vec!();
     for rule in ErrorLoggerIterator(parse_rule_list(block.move_iter())) {
         match rule {
             QualifiedRule(rule) => parse_style_rule(rule, &mut rules, namespaces, base_url),
             AtRule(rule) => parse_nested_at_rule(
-                rule.name.to_ascii_lower(), rule, &mut rules, namespaces, base_url),
+                rule.name.as_slice().to_ascii_lower(), rule, &mut rules, namespaces, base_url),
         }
     }
     parent_rules.push(CSSMediaRule(MediaRule {
@@ -77,15 +77,13 @@ pub fn parse_media_query_list(input: &[ComponentValue]) -> MediaQueryList {
     let iter = &mut input.skip_whitespace();
     let mut next = iter.next();
     if next.is_none() {
-        return MediaQueryList{ media_queries: ~[MediaQuery{media_type: All}] }
+        return MediaQueryList{ media_queries: vec!(MediaQuery{media_type: All}) }
     }
-    let mut queries = ~[];
+    let mut queries = vec!();
     loop {
         let mq = match next {
             Some(&Ident(ref value)) => {
-                // FIXME: Workaround for https://github.com/mozilla/rust/issues/10683
-                let value_lower = value.to_ascii_lower(); 
-                match value_lower.as_slice() {
+                match value.as_slice().to_ascii_lower().as_slice() {
                     "screen" => Some(MediaQuery{ media_type: MediaType(Screen) }),
                     "print" => Some(MediaQuery{ media_type: MediaType(Print) }),
                     "all" => Some(MediaQuery{ media_type: All }),

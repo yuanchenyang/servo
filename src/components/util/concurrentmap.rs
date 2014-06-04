@@ -4,14 +4,14 @@
 
 //! A Doug Lea-style concurrent hash map using striped locks.
 
+use rand;
+use rand::Rng;
 use std::cast;
+use std::hash::{Hash, sip};
 use std::ptr;
-use std::rand::Rng;
-use std::rand;
 use std::sync::atomics::{AtomicUint, Relaxed, SeqCst};
-use std::unstable::mutex::Mutex;
-use std::util;
-use std::vec;
+use std::unstable::mutex::StaticNativeMutex;
+use std::mem;
 
 /// When the size exceeds (number of buckets * LOAD_NUMERATOR/LOAD_DENOMINATOR), the hash table
 /// grows.
@@ -23,7 +23,7 @@ static LOAD_DENOMINATOR: uint = 4;
 
 /// One bucket in the hash table.
 struct Bucket<K,V> {
-    next: Option<~Bucket<K,V>>,
+    next: Option<Box<Bucket<K,V>>>,
     key: K,
     value: V,
 }
@@ -31,15 +31,15 @@ struct Bucket<K,V> {
 /// A concurrent hash map using striped locks.
 pub struct ConcurrentHashMap<K,V> {
     /// The first secret key value.
-    priv k0: u64,
+    k0: u64,
     /// The second key value.
-    priv k1: u64,
+    k1: u64,
     /// The number of elements in this hash table.
-    priv size: AtomicUint,
+    size: AtomicUint,
     /// The striped locks.
-    priv locks: ~[Mutex],
+    locks: Vec<StaticNativeMutex>,
     /// The buckets.
-    priv buckets: ~[Option<Bucket<K,V>>],
+    buckets: Vec<Option<Bucket<K,V>>>,
 }
 
 impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
@@ -56,12 +56,12 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
             k0: rand.gen(),
             k1: rand.gen(),
             size: AtomicUint::new(0),
-            locks: vec::from_fn(lock_count, |_| {
+            locks: Vec::from_fn(lock_count, |_| {
                 unsafe {
-                    Mutex::new()
+                    StaticNativeMutex::new()
                 }
             }),
-            buckets: vec::from_fn(lock_count * buckets_per_lock, |_| None),
+            buckets: Vec::from_fn(lock_count * buckets_per_lock, |_| None),
         }
     }
 
@@ -74,7 +74,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
             loop {
                 let (bucket_index, lock_index) = self.bucket_and_lock_indices(&key);
                 if this.overloaded() {
-                    this.locks[lock_index].unlock();
+                    this.locks.get(lock_index).unlock_noguard();
                     this.try_resize(self.buckets_per_lock() * 2);
 
                     // Have to retry because the bucket and lock indices will have shifted.
@@ -82,7 +82,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
                 }
 
                 this.insert_unlocked(key, value, Some(bucket_index));
-                this.locks[lock_index].unlock();
+                this.locks.get(lock_index).unlock_noguard();
                 break
             }
         }
@@ -97,16 +97,9 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
             None => self.bucket_index_unlocked(&key),
         };
 
-        match this.buckets[bucket_index] {
-            None => {
-                this.buckets[bucket_index] = Some(Bucket {
-                    next: None,
-                    key: key,
-                    value: value,
-                });
-                drop(this.size.fetch_add(1, SeqCst));
-            }
-            Some(ref mut bucket) => {
+        match this.buckets.get_mut(bucket_index) {
+            &None => {}
+            &Some(ref mut bucket) => {
                 // Search to try to find a value.
                 let mut bucket: *mut Bucket<K,V> = bucket;
                 loop {
@@ -118,12 +111,12 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
                     match (*bucket).next {
                         None => {}
                         Some(ref mut next_bucket) => {
-                            bucket = ptr::to_mut_unsafe_ptr(&mut **next_bucket);
+                            bucket = &mut **next_bucket as *mut Bucket<K,V>;
                             continue
                         }
                     }
 
-                    (*bucket).next = Some(~Bucket {
+                    (*bucket).next = Some(box Bucket {
                         next: None,
                         key: key,
                         value: value,
@@ -131,8 +124,15 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
                     drop(this.size.fetch_add(1, SeqCst));
                     break
                 }
+                return;
             }
         }
+        *this.buckets.get_mut(bucket_index) = Some(Bucket {
+            next: None,
+            key: key,
+            value: value,
+        });
+        drop(this.size.fetch_add(1, SeqCst));
     }
 
     /// Removes the given key from the hash table.
@@ -145,19 +145,19 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
 
         // Rebuild the bucket.
         let mut nuke_bucket = false;
-        match this.buckets[bucket_index] {
-            None => {}
-            Some(ref mut bucket) if bucket.key == *key => {
+        match this.buckets.get_mut(bucket_index) {
+            &None => {}
+            &Some(ref mut bucket) if bucket.key == *key => {
                 // Common case (assuming a sparse table): If the key is the first one in the
                 // chain, just copy the next fields over.
-                let next_opt = util::replace(&mut bucket.next, None);
+                let next_opt = mem::replace(&mut bucket.next, None);
                 match next_opt {
                     None => nuke_bucket = true,
-                    Some(~next) => *bucket = next,
+                    Some(box next) => *bucket = next,
                 }
                 drop(this.size.fetch_sub(1, SeqCst))
             }
-            Some(ref mut bucket) => {
+            &Some(ref mut bucket) => {
                 // Rarer case: If the key is elsewhere in the chain (or nowhere), then search for
                 // it and just stitch up pointers.
                 let mut prev: *mut Bucket<K,V> = bucket;
@@ -168,14 +168,14 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
                             Some(ref mut bucket) => {
                                 // Continue the search.
                                 if bucket.key != *key {
-                                    prev = ptr::to_mut_unsafe_ptr(&mut **bucket);
+                                    prev = &mut **bucket as *mut Bucket<K,V>;
                                     continue
                                 }
                             }
                         }
 
                         // If we got here, then we found the key. Now do a pointer stitch.
-                        let ~Bucket {
+                        let box Bucket {
                             next: next_next,
                             ..
                         } = (*prev).next.take_unwrap();
@@ -187,11 +187,11 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
             }
         }
         if nuke_bucket {
-            this.buckets[bucket_index] = None
+            *this.buckets.get_mut(bucket_index) = None
         }
 
         unsafe {
-            this.locks[lock_index].unlock()
+            this.locks.get(lock_index).unlock_noguard()
         }
     }
 
@@ -213,9 +213,9 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
         let (bucket_index, lock_index) = this.bucket_and_lock_indices(key);
 
         let result;
-        match this.buckets[bucket_index] {
-            None => result = false,
-            Some(ref bucket) => {
+        match this.buckets.get(bucket_index) {
+            &None => result = false,
+            &Some(ref bucket) => {
                 // Search to try to find a value.
                 let mut bucket = bucket;
                 loop {
@@ -235,7 +235,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
         }
 
         unsafe {
-            this.locks[lock_index].unlock()
+            this.locks.get(lock_index).unlock_noguard()
         }
 
         result
@@ -255,7 +255,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
             stripe_index += 1;
             if stripe_index == buckets_per_lock {
                 unsafe {
-                    this.locks[lock_index].unlock();
+                    this.locks.get(lock_index).unlock_noguard();
                 }
 
                 stripe_index = 0;
@@ -263,7 +263,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
             }
             if stripe_index == 0 {
                 unsafe {
-                    this.locks[lock_index].lock()
+                    this.locks.get(lock_index).lock_noguard()
                 }
             }
 
@@ -284,7 +284,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
         // Take a lock on all buckets.
         for lock in this.locks.mut_iter() {
             unsafe {
-                lock.lock()
+                lock.lock_noguard()
             }
         }
 
@@ -294,8 +294,8 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
         let new_bucket_count = lock_count * new_buckets_per_lock;
         if new_bucket_count > this.buckets.len() {
             // Create a new set of buckets.
-            let mut buckets = vec::from_fn(new_bucket_count, |_| None);
-            util::swap(&mut this.buckets, &mut buckets);
+            let mut buckets = Vec::from_fn(new_bucket_count, |_| None);
+            mem::swap(&mut this.buckets, &mut buckets);
             this.size.store(0, Relaxed);
 
             // Go through all the old buckets and insert the new data.
@@ -314,7 +314,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
                         loop {
                             match bucket {
                                 None => break,
-                                Some(~Bucket {
+                                Some(box Bucket {
                                     key: key,
                                     value: value,
                                     next: next
@@ -335,7 +335,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
         // Release all our locks.
         for lock in this.locks.mut_iter() {
             unsafe {
-                lock.unlock()
+                lock.unlock_noguard()
             }
         }
     }
@@ -346,10 +346,10 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
     #[inline]
     fn bucket_and_lock_indices(&self, key: &K) -> (uint, uint) {
         let this: &mut ConcurrentHashMap<K,V> = unsafe {
-            cast::transmute_mut(self)
+            cast::transmute_mut(cast::transmute_lifetime(self))
         };
 
-        let hash = key.hash_keyed(self.k0, self.k1);
+        let hash = sip::hash_with_keys(self.k0, self.k1, key);
         let lock_count = this.locks.len();
         let mut bucket_index;
         let mut lock_index;
@@ -359,7 +359,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
             bucket_index = hash as uint % bucket_count;
             lock_index = bucket_index / buckets_per_lock;
             unsafe {
-                this.locks[lock_index].lock();
+                this.locks.get(lock_index).lock_noguard();
             }
             let new_bucket_count = this.buckets.len();
             if bucket_count == new_bucket_count {
@@ -368,7 +368,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
 
             // If we got here, the hash table resized from under us: try again.
             unsafe {
-                this.locks[lock_index].unlock()
+                this.locks.get(lock_index).unlock_noguard()
             }
         }
 
@@ -379,7 +379,7 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
     /// function!
     #[inline]
     unsafe fn bucket_index_unlocked(&self, key: &K) -> uint {
-        let hash = key.hash_keyed(self.k0, self.k1);
+        let hash = sip::hash_with_keys(self.k0, self.k1, key);
         hash as uint % self.buckets.len()
     }
 
@@ -404,9 +404,9 @@ impl<K:Hash + Eq,V> ConcurrentHashMap<K,V> {
 }
 
 pub struct ConcurrentHashMapIterator<'a,K,V> {
-    priv map: &'a ConcurrentHashMap<K,V>,
-    priv bucket_index: int,
-    priv current_bucket: *Bucket<K,V>,
+    map: &'a ConcurrentHashMap<K,V>,
+    bucket_index: int,
+    current_bucket: *Bucket<K,V>,
 }
 
 impl<'a,K,V> Iterator<(&'a K, &'a V)> for ConcurrentHashMapIterator<'a,K,V> {
@@ -446,12 +446,12 @@ impl<'a,K,V> Iterator<(&'a K, &'a V)> for ConcurrentHashMapIterator<'a,K,V> {
                 // necessary and acquire the new one, if necessary.
                 if bucket_index != -1 {
                     unsafe {
-                        map.locks[lock_index].unlock()
+                        map.locks.get(lock_index as uint).unlock_noguard()
                     }
                 }
                 if bucket_index != (bucket_count as int) - 1 {
                     unsafe {
-                        map.locks[lock_index + 1].lock()
+                        map.locks.get((lock_index + 1) as uint).lock_noguard()
                     }
                 }
             }
@@ -463,9 +463,9 @@ impl<'a,K,V> Iterator<(&'a K, &'a V)> for ConcurrentHashMapIterator<'a,K,V> {
 
             self.bucket_index += 1;
 
-            self.current_bucket = match map.buckets[self.bucket_index] {
-                None => ptr::null(),
-                Some(ref bucket) => {
+            self.current_bucket = match map.buckets.get(self.bucket_index as uint) {
+                &None => ptr::null(),
+                &Some(ref bucket) => {
                     let bucket: *Bucket<K,V> = bucket;
                     bucket
                 }
@@ -481,15 +481,16 @@ impl<'a,K,V> Iterator<(&'a K, &'a V)> for ConcurrentHashMapIterator<'a,K,V> {
 
 #[cfg(test)]
 pub mod test {
-    use extra::arc::Arc;
+    use sync::Arc;
     use native;
+    use std::comm;
 
     use concurrentmap::ConcurrentHashMap;
 
     #[test]
     pub fn smoke() {
         let m = Arc::new(ConcurrentHashMap::new());
-        let (port, chan) = SharedChan::new();
+        let (chan, port) = comm::channel();
 
         // Big enough to make it resize once.
         for i in range(0, 5) {
@@ -497,7 +498,7 @@ pub mod test {
             let chan = chan.clone();
             native::task::spawn(proc() {
                 for j in range(i * 20, (i * 20) + 20) {
-                    m.get().insert(j, j * j);
+                    m.insert(j, j * j);
                 }
                 chan.send(());
             })
@@ -507,7 +508,7 @@ pub mod test {
         }
 
         let mut count = 0;
-        for (&k, &v) in m.get().iter() {
+        for (&k, &v) in m.iter() {
             assert_eq!(k * k, v)
             count += 1;
         }

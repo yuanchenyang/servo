@@ -2,21 +2,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#[crate_id = "github.com/mozilla/servo#msg:0.1"];
-#[crate_type = "lib"];
+#![crate_id = "github.com/mozilla/servo#msg:0.1"]
+#![crate_type = "lib"]
+#![crate_type = "dylib"]
+#![crate_type = "rlib"]
 
-#[feature(managed_boxes)];
-
-extern mod azure;
-extern mod extra;
-extern mod geom;
-extern mod layers;
-extern mod std;
+extern crate azure;
+extern crate geom;
+extern crate layers;
+extern crate serialize;
+extern crate std;
+extern crate url;
 
 #[cfg(target_os="macos")]
-extern mod core_foundation;
+extern crate core_foundation;
 #[cfg(target_os="macos")]
-extern mod io_surface;
+extern crate io_surface;
 
 pub mod compositor_msg;
 pub mod constellation_msg;

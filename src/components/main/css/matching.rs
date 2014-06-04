@@ -11,24 +11,24 @@ use layout::extra::LayoutAuxMethods;
 use layout::util::{LayoutDataAccess, LayoutDataWrapper};
 use layout::wrapper::{LayoutElement, LayoutNode, PostorderNodeMutTraversal, ThreadSafeLayoutNode};
 
-use extra::arc::Arc;
 use gfx::font_context::FontContext;
 use servo_util::cache::{Cache, LRUCache, SimpleHashCache};
 use servo_util::namespace::Null;
 use servo_util::smallvec::{SmallVec, SmallVec0, SmallVec16};
 use servo_util::str::DOMString;
 use std::cast;
-use std::to_bytes;
-use std::vec::VecIterator;
+use std::hash::{Hash, sip};
+use std::slice::Items;
 use style::{After, Before, ComputedValues, MatchedProperty, Stylist, TElement, TNode, cascade};
+use sync::Arc;
 
 pub struct ApplicableDeclarations {
-    normal: SmallVec16<MatchedProperty>,
-    before: SmallVec0<MatchedProperty>,
-    after: SmallVec0<MatchedProperty>,
+    pub normal: SmallVec16<MatchedProperty>,
+    pub before: SmallVec0<MatchedProperty>,
+    pub after: SmallVec0<MatchedProperty>,
 
     /// Whether the `normal` declarations are shareable with other nodes.
-    normal_shareable: bool,
+    pub normal_shareable: bool,
 }
 
 impl ApplicableDeclarations {
@@ -50,8 +50,8 @@ impl ApplicableDeclarations {
 }
 
 #[deriving(Clone)]
-struct ApplicableDeclarationsCacheEntry {
-    declarations: SmallVec16<MatchedProperty>,
+pub struct ApplicableDeclarationsCacheEntry {
+    pub declarations: SmallVec16<MatchedProperty>,
 }
 
 impl ApplicableDeclarationsCacheEntry {
@@ -73,9 +73,10 @@ impl Eq for ApplicableDeclarationsCacheEntry {
     }
 }
 
-impl IterBytes for ApplicableDeclarationsCacheEntry {
-    fn iter_bytes(&self, lsb0: bool, f: to_bytes::Cb) -> bool {
-        ApplicableDeclarationsCacheQuery::new(self.declarations.as_slice()).iter_bytes(lsb0, f)
+impl Hash for ApplicableDeclarationsCacheEntry {
+    fn hash(&self, state: &mut sip::SipState) {
+        let tmp = ApplicableDeclarationsCacheQuery::new(self.declarations.as_slice());
+        tmp.hash(state);
     }
 }
 
@@ -115,23 +116,22 @@ impl<'a> Equiv<ApplicableDeclarationsCacheEntry> for ApplicableDeclarationsCache
     }
 }
 
-impl<'a> IterBytes for ApplicableDeclarationsCacheQuery<'a> {
-    fn iter_bytes(&self, lsb0: bool, f: to_bytes::Cb) -> bool {
-        let mut result = true;
+
+impl<'a> Hash for ApplicableDeclarationsCacheQuery<'a> {
+    fn hash(&self, state: &mut sip::SipState) {
         for declaration in self.declarations.iter() {
             let ptr: uint = unsafe {
                 cast::transmute_copy(declaration)
             };
-            result = ptr.iter_bytes(lsb0, |x| f(x));
+            ptr.hash(state);
         }
-        result
     }
 }
 
 static APPLICABLE_DECLARATIONS_CACHE_SIZE: uint = 32;
 
 pub struct ApplicableDeclarationsCache {
-    cache: SimpleHashCache<ApplicableDeclarationsCacheEntry,Arc<ComputedValues>>,
+    pub cache: SimpleHashCache<ApplicableDeclarationsCacheEntry,Arc<ComputedValues>>,
 }
 
 impl ApplicableDeclarationsCache {
@@ -155,18 +155,18 @@ impl ApplicableDeclarationsCache {
 
 /// An LRU cache of the last few nodes seen, so that we can aggressively try to reuse their styles.
 pub struct StyleSharingCandidateCache {
-    priv cache: LRUCache<StyleSharingCandidate,()>,
+    cache: LRUCache<StyleSharingCandidate,()>,
 }
 
 #[deriving(Clone)]
-struct StyleSharingCandidate {
-    priv style: Arc<ComputedValues>,
-    priv parent_style: Arc<ComputedValues>,
+pub struct StyleSharingCandidate {
+    pub style: Arc<ComputedValues>,
+    pub parent_style: Arc<ComputedValues>,
 
     // TODO(pcwalton): Intern.
-    priv local_name: DOMString,
+    pub local_name: DOMString,
 
-    priv class: Option<DOMString>,
+    pub class: Option<DOMString>,
 }
 
 impl Eq for StyleSharingCandidate {
@@ -195,7 +195,7 @@ impl StyleSharingCandidate {
             match *node.borrow_layout_data_unchecked() {
                 None => return None,
                 Some(ref layout_data_ref) => {
-                    match layout_data_ref.data.style {
+                    match layout_data_ref.shared_data.style {
                         None => return None,
                         Some(ref data) => (*data).clone(),
                     }
@@ -206,7 +206,7 @@ impl StyleSharingCandidate {
             match *parent_node.borrow_layout_data_unchecked() {
                 None => return None,
                 Some(ref parent_layout_data_ref) => {
-                    match parent_layout_data_ref.data.style {
+                    match parent_layout_data_ref.shared_data.style {
                         None => return None,
                         Some(ref data) => (*data).clone(),
                     }
@@ -216,18 +216,17 @@ impl StyleSharingCandidate {
 
         let mut style = Some(style);
         let mut parent_style = Some(parent_style);
-        node.with_element(|element| {
-            if element.style_attribute().is_some() {
-                return None
-            }
+        let element = node.as_element();
+        if element.style_attribute().is_some() {
+            return None
+        }
 
-            Some(StyleSharingCandidate {
-                style: style.take_unwrap(),
-                parent_style: parent_style.take_unwrap(),
-                local_name: element.get_local_name().to_str(),
-                class: element.get_attr(&Null, "class")
-                              .map(|string| string.to_str()),
-            })
+        Some(StyleSharingCandidate {
+            style: style.take_unwrap(),
+            parent_style: parent_style.take_unwrap(),
+            local_name: element.get_local_name().to_str(),
+            class: element.get_attr(&Null, "class")
+                          .map(|string| string.to_str()),
         })
     }
 
@@ -255,7 +254,7 @@ impl StyleSharingCandidateCache {
         }
     }
 
-    pub fn iter<'a>(&'a self) -> VecIterator<'a,(StyleSharingCandidate,())> {
+    pub fn iter<'a>(&'a self) -> Items<'a,(StyleSharingCandidate,())> {
         self.cache.iter()
     }
 
@@ -287,12 +286,12 @@ pub trait MatchMethods {
     fn recalc_style_for_subtree(&self,
                                 stylist: &Stylist,
                                 layout_context: &mut LayoutContext,
-                                mut font_context: ~FontContext,
+                                mut font_context: Box<FontContext>,
                                 applicable_declarations: &mut ApplicableDeclarations,
                                 applicable_declarations_cache: &mut ApplicableDeclarationsCache,
                                 style_sharing_candidate_cache: &mut StyleSharingCandidateCache,
                                 parent: Option<LayoutNode>)
-                                -> ~FontContext;
+                                -> Box<FontContext>;
 
     fn match_node(&self,
                   stylist: &Stylist,
@@ -310,7 +309,6 @@ pub trait MatchMethods {
 
     unsafe fn cascade_node(&self,
                            parent: Option<LayoutNode>,
-                           initial_values: &ComputedValues,
                            applicable_declarations: &ApplicableDeclarations,
                            applicable_declarations_cache: &mut ApplicableDeclarationsCache);
 }
@@ -320,7 +318,6 @@ trait PrivateMatchMethods {
                                    parent_style: Option<&Arc<ComputedValues>>,
                                    applicable_declarations: &[MatchedProperty],
                                    style: &mut Option<Arc<ComputedValues>>,
-                                   initial_values: &ComputedValues,
                                    applicable_declarations_cache: &mut
                                    ApplicableDeclarationsCache,
                                    shareable: bool);
@@ -336,7 +333,6 @@ impl<'ln> PrivateMatchMethods for LayoutNode<'ln> {
                                    parent_style: Option<&Arc<ComputedValues>>,
                                    applicable_declarations: &[MatchedProperty],
                                    style: &mut Option<Arc<ComputedValues>>,
-                                   initial_values: &ComputedValues,
                                    applicable_declarations_cache: &mut
                                    ApplicableDeclarationsCache,
                                    shareable: bool) {
@@ -348,12 +344,11 @@ impl<'ln> PrivateMatchMethods for LayoutNode<'ln> {
                 let cache_entry = applicable_declarations_cache.find(applicable_declarations);
                 match cache_entry {
                     None => cached_computed_values = None,
-                    Some(ref style) => cached_computed_values = Some(style.get()),
+                    Some(ref style) => cached_computed_values = Some(&**style),
                 }
                 let (the_style, is_cacheable) = cascade(applicable_declarations,
                                                         shareable,
-                                                        Some(parent_style.get()),
-                                                        initial_values,
+                                                        Some(&***parent_style),
                                                         cached_computed_values);
                 cacheable = is_cacheable;
                 this_style = Arc::new(the_style);
@@ -362,7 +357,6 @@ impl<'ln> PrivateMatchMethods for LayoutNode<'ln> {
                 let (the_style, is_cacheable) = cascade(applicable_declarations,
                                                         shareable,
                                                         None,
-                                                        initial_values,
                                                         None);
                 cacheable = is_cacheable;
                 this_style = Arc::new(the_style);
@@ -395,13 +389,13 @@ impl<'ln> PrivateMatchMethods for LayoutNode<'ln> {
         match parent_layout_data {
             &Some(ref parent_layout_data_ref) => {
                 // Check parent style.
-                let parent_style = parent_layout_data_ref.data.style.as_ref().unwrap();
+                let parent_style = parent_layout_data_ref.shared_data.style.as_ref().unwrap();
                 if !arc_ptr_eq(parent_style, &candidate.parent_style) {
                     return None
                 }
 
                 // Check tag names, classes, etc.
-                if !self.with_element(|element| candidate.can_share_style_with(element)) {
+                if !candidate.can_share_style_with(&self.as_element()) {
                     return None
                 }
 
@@ -419,12 +413,7 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
                   stylist: &Stylist,
                   applicable_declarations: &mut ApplicableDeclarations,
                   shareable: &mut bool) {
-        let style_attribute = self.with_element(|element| {
-            match *element.style_attribute() {
-                None => None,
-                Some(ref style_attribute) => Some(style_attribute)
-            }
-        });
+        let style_attribute = self.as_element().style_attribute().as_ref();
 
         applicable_declarations.normal_shareable =
             stylist.push_applicable_declarations(self,
@@ -451,9 +440,10 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
         if !self.is_element() {
             return CannotShare(false)
         }
-        let ok = self.with_element(|element| {
+        let ok = {
+            let element = self.as_element();
             element.style_attribute().is_none() && element.get_attr(&Null, "id").is_none()
-        });
+        };
         if !ok {
             return CannotShare(false)
         }
@@ -463,13 +453,8 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
                 Some(shared_style) => {
                     // Yay, cache hit. Share the style.
                     let mut layout_data_ref = self.mutate_layout_data();
-                    match *layout_data_ref.get() {
-                        None => fail!(),
-                        Some(ref mut layout_data_ref) => {
-                            layout_data_ref.data.style = Some(shared_style);
-                            return StyleWasShared(i)
-                        }
-                    }
+                    layout_data_ref.get_mut_ref().shared_data.style = Some(shared_style);
+                    return StyleWasShared(i)
                 }
                 None => {}
             }
@@ -481,12 +466,12 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
     fn recalc_style_for_subtree(&self,
                                 stylist: &Stylist,
                                 layout_context: &mut LayoutContext,
-                                mut font_context: ~FontContext,
+                                mut font_context: Box<FontContext>,
                                 applicable_declarations: &mut ApplicableDeclarations,
                                 applicable_declarations_cache: &mut ApplicableDeclarationsCache,
                                 style_sharing_candidate_cache: &mut StyleSharingCandidateCache,
                                 parent: Option<LayoutNode>)
-                                -> ~FontContext {
+                                -> Box<FontContext> {
         self.initialize_layout_data(layout_context.layout_chan.clone());
 
         // First, check to see whether we can share a style with someone.
@@ -502,9 +487,7 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
                 }
 
                 unsafe {
-                    let initial_values = layout_context.initial_css_values.get();
                     self.cascade_node(parent,
-                                      initial_values,
                                       applicable_declarations,
                                       applicable_declarations_cache)
                 }
@@ -538,7 +521,6 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
 
     unsafe fn cascade_node(&self,
                            parent: Option<LayoutNode>,
-                           initial_values: &ComputedValues,
                            applicable_declarations: &ApplicableDeclarations,
                            applicable_declarations_cache: &mut ApplicableDeclarationsCache) {
         // Get our parent's style. This must be unsafe so that we don't touch the parent's
@@ -553,7 +535,7 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
                 match *parent_layout_data {
                     None => fail!("no parent data?!"),
                     Some(ref parent_layout_data) => {
-                        match parent_layout_data.data.style {
+                        match parent_layout_data.shared_data.style {
                             None => fail!("parent hasn't been styled yet?!"),
                             Some(ref style) => Some(style),
                         }
@@ -563,20 +545,18 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
         };
 
         let mut layout_data_ref = self.mutate_layout_data();
-        match *layout_data_ref.get() {
-            None => fail!("no layout data"),
-            Some(ref mut layout_data) => {
+        match &mut *layout_data_ref {
+            &None => fail!("no layout data"),
+            &Some(ref mut layout_data) => {
                 self.cascade_node_pseudo_element(parent_style,
                                                  applicable_declarations.normal.as_slice(),
-                                                 &mut layout_data.data.style,
-                                                 initial_values,
+                                                 &mut layout_data.shared_data.style,
                                                  applicable_declarations_cache,
                                                  applicable_declarations.normal_shareable);
                 if applicable_declarations.before.len() > 0 {
                     self.cascade_node_pseudo_element(parent_style,
                                                      applicable_declarations.before.as_slice(),
                                                      &mut layout_data.data.before_style,
-                                                     initial_values,
                                                      applicable_declarations_cache,
                                                      false);
                 }
@@ -584,7 +564,6 @@ impl<'ln> MatchMethods for LayoutNode<'ln> {
                     self.cascade_node_pseudo_element(parent_style,
                                                      applicable_declarations.after.as_slice(),
                                                      &mut layout_data.data.after_style,
-                                                     initial_values,
                                                      applicable_declarations_cache,
                                                      false);
                 }

@@ -2,30 +2,48 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#[crate_id = "github.com/mozilla/servo#style:0.1"];
-#[crate_type = "lib"];
+#![crate_id = "github.com/mozilla/servo#style:0.1"]
+#![crate_type = "lib"]
+#![crate_type = "dylib"]
+#![crate_type = "rlib"]
 
-#[comment = "The Servo Parallel Browser Project"];
-#[license = "MPL"];
+#![comment = "The Servo Parallel Browser Project"]
+#![license = "MPL"]
 
-#[feature(globs, macro_rules, managed_boxes)];
+#![feature(globs, macro_rules)]
 
-extern mod extra;
-extern mod cssparser;
-extern mod encoding;
-extern mod servo_util = "util";
+#![feature(phase)]
+#[phase(syntax, link)] extern crate log;
+
+extern crate collections;
+extern crate num;
+extern crate serialize;
+extern crate sync;
+extern crate url;
+
+extern crate cssparser;
+extern crate encoding;
+
+#[phase(syntax)]
+extern crate servo_macros = "macros";
+extern crate servo_util = "util";
 
 
 // Public API
-pub use stylesheets::Stylesheet;
+pub use stylesheets::{Stylesheet, CSSRule, StyleRule};
 pub use selector_matching::{Stylist, StylesheetOrigin, UserAgentOrigin, AuthorOrigin, UserOrigin};
 pub use selector_matching::{MatchedProperty};
-pub use properties::{cascade, PropertyDeclaration, ComputedValues, computed_values};
+pub use properties::{cascade, cascade_anonymous};
+pub use properties::{PropertyDeclaration, ComputedValues, computed_values, style_structs};
 pub use properties::{PropertyDeclarationBlock, parse_style_attribute};  // Style attributes
-pub use properties::{initial_values};
+pub use properties::{CSSFloat, DeclaredValue, PropertyDeclarationParseResult};
+pub use properties::longhands;
 pub use errors::with_errors_silenced;
 pub use node::{TElement, TNode};
 pub use selectors::{PseudoElement, Before, After, AttrSelector, SpecificNamespace, AnyNamespace};
+pub use selectors::{NamespaceConstraint, Selector, CompoundSelector, SimpleSelector, Combinator};
+pub use namespaces::NamespaceMap;
+pub use media_queries::{MediaRule, MediaQueryList, MediaQuery, Device, MediaType, MediaQueryType};
 
 mod stylesheets;
 mod errors;

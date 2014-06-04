@@ -22,17 +22,17 @@ impl<'a, T: Ord + Eq> BinarySearchMethods<'a, T> for &'a [T] {
         let mut low : int = 0;
         let mut high : int = (self.len() as int) - 1;
 
-        while (low <= high) {
+        while low <= high {
             // http://googleresearch.blogspot.com/2006/06/extra-extra-read-all-about-it-nearly.html
-            let mid : int = (((low as uint) + (high as uint)) >> 1) as int;
+            let mid = ((low as uint) + (high as uint)) >> 1;
             let midv = &self[mid];
 
-            if (midv < key) {
-                low = mid + 1;
-            } else if (midv > key) {
-                high = mid - 1;
+            if midv < key {
+                low = (mid as int) + 1;
+            } else if midv > key {
+                high = (mid as int) - 1;
             } else {
-                return Some(mid as uint);
+                return Some(mid);
             }
         }
         return None;
@@ -65,12 +65,6 @@ fn test_match<T: Eq>(b: &T, a: Option<&T>) -> bool {
         None => false,
         Some(t) => t == b
     }
-} 
-
-pub fn zip_copies<A: Clone, B: Clone>(avec: &[A], bvec: &[B]) -> ~[(A,B)] {
-    avec.iter().map(|x| x.clone())
-        .zip(bvec.iter().map(|x| x.clone()))
-        .collect()
 }
 
 #[test]

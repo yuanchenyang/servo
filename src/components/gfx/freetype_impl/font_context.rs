@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use std::rc::Rc;
+
 extern mod freetype;
 extern mod fontconfig;
 
@@ -10,7 +12,7 @@ use self::freetype::freetype::{
     FT_Library,
 };
 use self::freetype::freetype::bindgen::{
-    FT_Init_FreeType, 
+    FT_Init_FreeType,
     FT_Done_FreeType
 };
 use fontconfig::font_list::path_from_identifier;
@@ -34,7 +36,7 @@ impl Drop for FreeTypeLibraryHandle {
 }
 
 pub struct FreeTypeFontContextHandle {
-    ctx: @FreeTypeLibraryHandle,
+    ctx: Rc<FreeTypeLibraryHandle>,
 }
 
 pub impl FreeTypeFontContextHandle {
@@ -43,8 +45,8 @@ pub impl FreeTypeFontContextHandle {
         let result = FT_Init_FreeType(ptr::to_unsafe_ptr(&ctx));
         if !result.succeeded() { fail!(); }
 
-        FreeTypeFontContextHandle { 
-            ctx: @FreeTypeLibraryHandle { ctx: ctx },
+        FreeTypeFontContextHandle {
+            ctx: Rc::new(FreeTypeLibraryHandle { ctx: ctx }),
         }
     }
 }

@@ -5,17 +5,15 @@
 //! Small vectors in various sizes. These store a certain number of elements inline and fall back
 //! to the heap for larger allocations.
 
-use i = std::unstable::intrinsics::init;
+use i = std::mem::init;
 use std::cast;
-use std::libc::c_char;
+use std::cmp;
+use std::intrinsics;
 use std::mem;
-use std::num;
 use std::ptr;
 use std::rt::global_heap;
 use std::rt::local_heap;
-use std::unstable::intrinsics;
-use std::unstable::raw::Slice;
-use std::util;
+use std::raw::Slice;
 
 // Generic code for all small vectors
 
@@ -62,6 +60,16 @@ pub trait SmallVec<T> : SmallVecPrivate<T> {
         }
     }
 
+    fn mut_iter<'a>(&'a mut self) -> SmallVecMutIterator<'a,T> {
+        unsafe {
+            SmallVecMutIterator {
+                ptr: cast::transmute(self.begin()),
+                end: cast::transmute(self.end()),
+                lifetime: None,
+            }
+        }
+    }
+
     /// NB: For efficiency reasons (avoiding making a second copy of the inline elements), this
     /// actually clears out the original array instead of moving it.
     fn move_iter<'a>(&'a mut self) -> SmallVecMoveIterator<'a,T> {
@@ -86,13 +94,39 @@ pub trait SmallVec<T> : SmallVecPrivate<T> {
     fn push(&mut self, value: T) {
         let cap = self.cap();
         if self.len() == cap {
-            self.grow(num::max(cap * 2, 1))
+            self.grow(cmp::max(cap * 2, 1))
         }
         unsafe {
             let end: &mut T = cast::transmute(self.end());
-            intrinsics::move_val_init(end, value);
+            mem::move_val_init(end, value);
             let len = self.len();
             self.set_len(len + 1)
+        }
+    }
+
+    fn push_all_move<V:SmallVec<T>>(&mut self, mut other: V) {
+        for value in other.move_iter() {
+            self.push(value)
+        }
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        if self.len() == 0 {
+            return None
+        }
+
+        unsafe {
+            let mut value: T = mem::uninit();
+            let last_index = self.len() - 1;
+
+            if (last_index as int) < 0 {
+                fail!("overflow")
+            }
+            let end_ptr = self.begin().offset(last_index as int);
+
+            mem::swap(&mut value, cast::transmute::<*T,&mut T>(end_ptr));
+            self.set_len(last_index);
+            Some(value)
         }
     }
 
@@ -104,9 +138,9 @@ pub trait SmallVec<T> : SmallVecPrivate<T> {
 
             if self.spilled() {
                 if intrinsics::owns_managed::<T>() {
-                    local_heap::local_free(self.ptr() as *u8 as *c_char)
+                    local_heap::local_free(self.ptr() as *u8)
                 } else {
-                    global_heap::exchange_free(self.ptr() as *u8 as *c_char)
+                    global_heap::exchange_free(self.ptr() as *u8)
                 }
             } else {
                 let mut_begin: *mut T = cast::transmute(self.begin());
@@ -151,6 +185,11 @@ pub trait SmallVec<T> : SmallVecPrivate<T> {
         self.slice(0, self.len())
     }
 
+    fn as_mut_slice<'a>(&'a mut self) -> &'a mut [T] {
+        let len = self.len();
+        self.mut_slice(0, len)
+    }
+
     fn mut_slice<'a>(&'a mut self, start: uint, end: uint) -> &'a mut [T] {
         assert!(start <= end);
         assert!(end <= self.len());
@@ -173,9 +212,9 @@ pub trait SmallVec<T> : SmallVecPrivate<T> {
 }
 
 pub struct SmallVecIterator<'a,T> {
-    priv ptr: *T,
-    priv end: *T,
-    priv lifetime: Option<&'a T>
+    ptr: *T,
+    end: *T,
+    lifetime: Option<&'a T>
 }
 
 impl<'a,T> Iterator<&'a T> for SmallVecIterator<'a,T> {
@@ -196,10 +235,34 @@ impl<'a,T> Iterator<&'a T> for SmallVecIterator<'a,T> {
     }
 }
 
+pub struct SmallVecMutIterator<'a,T> {
+    ptr: *mut T,
+    end: *mut T,
+    lifetime: Option<&'a mut T>
+}
+
+impl<'a,T> Iterator<&'a mut T> for SmallVecMutIterator<'a,T> {
+    #[inline]
+    fn next(&mut self) -> Option<&'a mut T> {
+        unsafe {
+            if self.ptr == self.end {
+                return None
+            }
+            let old = self.ptr;
+            self.ptr = if mem::size_of::<T>() == 0 {
+                cast::transmute(self.ptr as uint + 1)
+            } else {
+                self.ptr.offset(1)
+            };
+            Some(cast::transmute(old))
+        }
+    }
+}
+
 pub struct SmallVecMoveIterator<'a,T> {
-    priv allocation: Option<*mut u8>,
-    priv iter: SmallVecIterator<'static,T>,
-    priv lifetime: Option<&'a T>,
+    allocation: Option<*mut u8>,
+    iter: SmallVecIterator<'static,T>,
+    lifetime: Option<&'a T>,
 }
 
 impl<'a,T> Iterator<T> for SmallVecMoveIterator<'a,T> {
@@ -211,7 +274,7 @@ impl<'a,T> Iterator<T> for SmallVecMoveIterator<'a,T> {
                 Some(reference) => {
                     // Zero out the values as we go so they don't get double-freed.
                     let reference: &mut T = cast::transmute(reference);
-                    Some(util::replace(reference, intrinsics::init()))
+                    Some(mem::replace(reference, mem::init()))
                 }
             }
         }
@@ -229,9 +292,9 @@ impl<'a,T> Drop for SmallVecMoveIterator<'a,T> {
             Some(allocation) => {
                 unsafe {
                     if intrinsics::owns_managed::<T>() {
-                        local_heap::local_free(allocation as *u8 as *c_char)
+                        local_heap::local_free(allocation as *u8)
                     } else {
-                        global_heap::exchange_free(allocation as *u8 as *c_char)
+                        global_heap::exchange_free(allocation as *u8)
                     }
                 }
             }
@@ -249,11 +312,7 @@ macro_rules! def_small_vector(
             ptr: *T,
             data: [T, ..$size],
         }
-    )
-)
 
-macro_rules! def_small_vector_private_trait_impl(
-    ($name:ident, $size:expr) => (
         impl<T> SmallVecPrivate<T> for $name<T> {
             unsafe fn set_len(&mut self, new_len: uint) {
                 self.len = new_len
@@ -279,11 +338,7 @@ macro_rules! def_small_vector_private_trait_impl(
                 self.ptr = cast::transmute(new_ptr)
             }
         }
-    )
-)
 
-macro_rules! def_small_vector_trait_impl(
-    ($name:ident, $size:expr) => (
         impl<T> SmallVec<T> for $name<T> {
             fn inline_size(&self) -> uint {
                 $size
@@ -295,51 +350,7 @@ macro_rules! def_small_vector_trait_impl(
                 self.cap
             }
         }
-    )
-)
 
-macro_rules! def_small_vector_drop_impl(
-    ($name:ident, $size:expr) => (
-        #[unsafe_destructor]
-        impl<T> Drop for $name<T> {
-            fn drop(&mut self) {
-                if !self.spilled() {
-                    return
-                }
-
-                unsafe {
-                    let ptr = self.mut_ptr();
-                    for i in range(0, self.len()) {
-                        *ptr.offset(i as int) = intrinsics::uninit();
-                    }
-
-                    if intrinsics::owns_managed::<T>() {
-                        local_heap::local_free(self.ptr() as *u8 as *c_char)
-                    } else {
-                        global_heap::exchange_free(self.ptr() as *u8 as *c_char)
-                    }
-                }
-            }
-        }
-    )
-)
-
-macro_rules! def_small_vector_clone_impl(
-    ($name:ident) => (
-        impl<T:Clone> Clone for $name<T> {
-            fn clone(&self) -> $name<T> {
-                let mut new_vector = $name::new();
-                for element in self.iter() {
-                    new_vector.push((*element).clone())
-                }
-                new_vector
-            }
-        }
-    )
-)
-
-macro_rules! def_small_vector_impl(
-    ($name:ident, $size:expr) => (
         impl<T> $name<T> {
             #[inline]
             pub fn new() -> $name<T> {
@@ -348,13 +359,21 @@ macro_rules! def_small_vector_impl(
                         len: 0,
                         cap: $size,
                         ptr: ptr::null(),
-                        data: intrinsics::init(),
+                        data: mem::init(),
                     }
                 }
             }
         }
     )
 )
+
+def_small_vector!(SmallVec1, 1)
+def_small_vector!(SmallVec2, 2)
+def_small_vector!(SmallVec4, 4)
+def_small_vector!(SmallVec8, 8)
+def_small_vector!(SmallVec16, 16)
+def_small_vector!(SmallVec24, 24)
+def_small_vector!(SmallVec32, 32)
 
 /// TODO(pcwalton): Remove in favor of `vec_ng` after a Rust upgrade.
 pub struct SmallVec0<T> {
@@ -409,57 +428,63 @@ impl<T> SmallVec0<T> {
     }
 }
 
+macro_rules! def_small_vector_drop_impl(
+    ($name:ident, $size:expr) => (
+        #[unsafe_destructor]
+        impl<T> Drop for $name<T> {
+            fn drop(&mut self) {
+                if !self.spilled() {
+                    return
+                }
+
+                unsafe {
+                    let ptr = self.mut_ptr();
+                    for i in range(0, self.len()) {
+                        *ptr.offset(i as int) = mem::uninit();
+                    }
+
+                    if intrinsics::owns_managed::<T>() {
+                        local_heap::local_free(self.ptr() as *u8)
+                    } else {
+                        global_heap::exchange_free(self.ptr() as *u8)
+                    }
+                }
+            }
+        }
+    )
+)
+
 def_small_vector_drop_impl!(SmallVec0, 0)
-def_small_vector_clone_impl!(SmallVec0)
-
-def_small_vector!(SmallVec1, 1)
-def_small_vector_private_trait_impl!(SmallVec1, 1)
-def_small_vector_trait_impl!(SmallVec1, 1)
 def_small_vector_drop_impl!(SmallVec1, 1)
-def_small_vector_clone_impl!(SmallVec1)
-def_small_vector_impl!(SmallVec1, 1)
-
-def_small_vector!(SmallVec2, 2)
-def_small_vector_private_trait_impl!(SmallVec2, 2)
-def_small_vector_trait_impl!(SmallVec2, 2)
 def_small_vector_drop_impl!(SmallVec2, 2)
-def_small_vector_clone_impl!(SmallVec2)
-def_small_vector_impl!(SmallVec2, 2)
-
-def_small_vector!(SmallVec4, 4)
-def_small_vector_private_trait_impl!(SmallVec4, 4)
-def_small_vector_trait_impl!(SmallVec4, 4)
 def_small_vector_drop_impl!(SmallVec4, 4)
-def_small_vector_clone_impl!(SmallVec4)
-def_small_vector_impl!(SmallVec4, 4)
-
-def_small_vector!(SmallVec8, 8)
-def_small_vector_private_trait_impl!(SmallVec8, 8)
-def_small_vector_trait_impl!(SmallVec8, 8)
 def_small_vector_drop_impl!(SmallVec8, 8)
-def_small_vector_clone_impl!(SmallVec8)
-def_small_vector_impl!(SmallVec8, 8)
-
-def_small_vector!(SmallVec16, 16)
-def_small_vector_private_trait_impl!(SmallVec16, 16)
-def_small_vector_trait_impl!(SmallVec16, 16)
 def_small_vector_drop_impl!(SmallVec16, 16)
-def_small_vector_clone_impl!(SmallVec16)
-def_small_vector_impl!(SmallVec16, 16)
-
-def_small_vector!(SmallVec24, 24)
-def_small_vector_private_trait_impl!(SmallVec24, 24)
-def_small_vector_trait_impl!(SmallVec24, 24)
 def_small_vector_drop_impl!(SmallVec24, 24)
-def_small_vector_clone_impl!(SmallVec24)
-def_small_vector_impl!(SmallVec24, 24)
-
-def_small_vector!(SmallVec32, 32)
-def_small_vector_private_trait_impl!(SmallVec32, 32)
-def_small_vector_trait_impl!(SmallVec32, 32)
 def_small_vector_drop_impl!(SmallVec32, 32)
+
+macro_rules! def_small_vector_clone_impl(
+    ($name:ident) => (
+        impl<T:Clone> Clone for $name<T> {
+            fn clone(&self) -> $name<T> {
+                let mut new_vector = $name::new();
+                for element in self.iter() {
+                    new_vector.push((*element).clone())
+                }
+                new_vector
+            }
+        }
+    )
+)
+
+def_small_vector_clone_impl!(SmallVec0)
+def_small_vector_clone_impl!(SmallVec1)
+def_small_vector_clone_impl!(SmallVec2)
+def_small_vector_clone_impl!(SmallVec4)
+def_small_vector_clone_impl!(SmallVec8)
+def_small_vector_clone_impl!(SmallVec16)
+def_small_vector_clone_impl!(SmallVec24)
 def_small_vector_clone_impl!(SmallVec32)
-def_small_vector_impl!(SmallVec32, 32)
 
 #[cfg(test)]
 pub mod tests {
@@ -470,50 +495,50 @@ pub mod tests {
     #[test]
     pub fn test_inline() {
         let mut v = SmallVec16::new();
-        v.push(~"hello");
-        v.push(~"there");
-        assert_eq!(v.as_slice(), &[~"hello", ~"there"]);
+        v.push("hello".to_owned());
+        v.push("there".to_owned());
+        assert_eq!(v.as_slice(), &["hello".to_owned(), "there".to_owned()]);
     }
 
     #[test]
     pub fn test_spill() {
         let mut v = SmallVec2::new();
-        v.push(~"hello");
-        v.push(~"there");
-        v.push(~"burma");
-        v.push(~"shave");
-        assert_eq!(v.as_slice(), &[~"hello", ~"there", ~"burma", ~"shave"]);
+        v.push("hello".to_owned());
+        v.push("there".to_owned());
+        v.push("burma".to_owned());
+        v.push("shave".to_owned());
+        assert_eq!(v.as_slice(), &["hello".to_owned(), "there".to_owned(), "burma".to_owned(), "shave".to_owned()]);
     }
 
     #[test]
     pub fn test_double_spill() {
         let mut v = SmallVec2::new();
-        v.push(~"hello");
-        v.push(~"there");
-        v.push(~"burma");
-        v.push(~"shave");
-        v.push(~"hello");
-        v.push(~"there");
-        v.push(~"burma");
-        v.push(~"shave");
+        v.push("hello".to_owned());
+        v.push("there".to_owned());
+        v.push("burma".to_owned());
+        v.push("shave".to_owned());
+        v.push("hello".to_owned());
+        v.push("there".to_owned());
+        v.push("burma".to_owned());
+        v.push("shave".to_owned());
         assert_eq!(v.as_slice(), &[
-            ~"hello", ~"there", ~"burma", ~"shave", ~"hello", ~"there", ~"burma", ~"shave",
+            "hello".to_owned(), "there".to_owned(), "burma".to_owned(), "shave".to_owned(), "hello".to_owned(), "there".to_owned(), "burma".to_owned(), "shave".to_owned(),
         ]);
     }
 
     #[test]
     pub fn test_smallvec0() {
         let mut v = SmallVec0::new();
-        v.push(~"hello");
-        v.push(~"there");
-        v.push(~"burma");
-        v.push(~"shave");
-        v.push(~"hello");
-        v.push(~"there");
-        v.push(~"burma");
-        v.push(~"shave");
+        v.push("hello".to_owned());
+        v.push("there".to_owned());
+        v.push("burma".to_owned());
+        v.push("shave".to_owned());
+        v.push("hello".to_owned());
+        v.push("there".to_owned());
+        v.push("burma".to_owned());
+        v.push("shave".to_owned());
         assert_eq!(v.as_slice(), &[
-            ~"hello", ~"there", ~"burma", ~"shave", ~"hello", ~"there", ~"burma", ~"shave",
+            "hello".to_owned(), "there".to_owned(), "burma".to_owned(), "shave".to_owned(), "hello".to_owned(), "there".to_owned(), "burma".to_owned(), "shave".to_owned(),
         ]);
     }
 }

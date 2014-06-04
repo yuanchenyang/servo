@@ -6,27 +6,67 @@ use image::base::Image;
 use image_cache_task::{ImageReady, ImageNotReady, ImageFailed};
 use local_image_cache::LocalImageCache;
 
-use extra::arc::{Arc, MutexArc};
-use extra::url::Url;
 use geom::size::Size2D;
-use std::util;
+use std::cast;
+use std::mem;
+use std::ptr;
+use sync::{Arc, Mutex};
+use url::Url;
 
 // FIXME: Nasty coupling here This will be a problem if we want to factor out image handling from
 // the network stack. This should probably be factored out into an interface and use dependency
 // injection.
+
+/// An unfortunate hack to make this `Arc<Mutex>` `Share`.
+pub struct LocalImageCacheHandle {
+    data: *uint,
+}
+
+impl Drop for LocalImageCacheHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _: Box<Arc<Mutex<Box<LocalImageCache>>>> =
+                cast::transmute(mem::replace(&mut self.data, ptr::null()));
+        }
+    }
+}
+
+impl Clone for LocalImageCacheHandle {
+    fn clone(&self) -> LocalImageCacheHandle {
+        unsafe {
+            let handle = cast::transmute::<&Arc<Mutex<Box<LocalImageCache>>>,&Arc<*()>>(self.get());
+            let new_handle = (*handle).clone();
+            LocalImageCacheHandle::new(new_handle)
+        }
+    }
+}
+
+impl LocalImageCacheHandle {
+    pub unsafe fn new(cache: Arc<*()>) -> LocalImageCacheHandle {
+        LocalImageCacheHandle {
+            data: cast::transmute(box cache),
+        }
+    }
+
+    pub fn get<'a>(&'a self) -> &'a Arc<Mutex<Box<LocalImageCache>>> {
+        unsafe {
+            cast::transmute::<*uint,&'a Arc<Mutex<Box<LocalImageCache>>>>(self.data)
+        }
+    }
+}
 
 /// A struct to store image data. The image will be loaded once the first time it is requested,
 /// and an Arc will be stored.  Clones of this Arc are given out on demand.
 #[deriving(Clone)]
 pub struct ImageHolder {
     url: Url,
-    image: Option<Arc<~Image>>,
+    image: Option<Arc<Box<Image>>>,
     cached_size: Size2D<int>,
-    local_image_cache: MutexArc<LocalImageCache>,
+    local_image_cache: LocalImageCacheHandle,
 }
 
 impl ImageHolder {
-    pub fn new(url: Url, local_image_cache: MutexArc<LocalImageCache>) -> ImageHolder {
+    pub fn new(url: Url, local_image_cache: LocalImageCacheHandle) -> ImageHolder {
         debug!("ImageHolder::new() {}", url.to_str());
         let holder = ImageHolder {
             url: url,
@@ -40,11 +80,11 @@ impl ImageHolder {
         // but they are intended to be spread out in time. Ideally prefetch
         // should be done as early as possible and decode only once we
         // are sure that the image will be used.
-        unsafe {
-            holder.local_image_cache.unsafe_access(|local_image_cache| {
-                local_image_cache.prefetch(&holder.url);
-                local_image_cache.decode(&holder.url);
-            });
+        {
+            let val = holder.local_image_cache.get().lock();
+            let mut local_image_cache = val;
+            local_image_cache.prefetch(&holder.url);
+            local_image_cache.decode(&holder.url);
         }
 
         holder
@@ -63,23 +103,27 @@ impl ImageHolder {
     pub fn get_size(&mut self) -> Option<Size2D<int>> {
         debug!("get_size() {}", self.url.to_str());
         self.get_image().map(|img| {
-            let img_ref = img.get();
-            self.cached_size = Size2D(img_ref.width as int,
-                                      img_ref.height as int);
+            self.cached_size = Size2D(img.width as int,
+                                      img.height as int);
             self.cached_size.clone()
         })
     }
 
-    pub fn get_image(&mut self) -> Option<Arc<~Image>> {
+    pub fn get_image_if_present(&self) -> Option<Arc<Box<Image>>> {
+        debug!("get_image_if_present() {}", self.url.to_str());
+        self.image.clone()
+    }
+
+    pub fn get_image(&mut self) -> Option<Arc<Box<Image>>> {
         debug!("get_image() {}", self.url.to_str());
 
         // If this is the first time we've called this function, load
         // the image and store it for the future
         if self.image.is_none() {
-            let port = unsafe {
-                self.local_image_cache.unsafe_access(|local_image_cache| {
-                    local_image_cache.get_image(&self.url)
-                })
+            let port = {
+                let val = self.local_image_cache.get().lock();
+                let mut local_image_cache = val;
+                local_image_cache.get_image(&self.url)
             };
             match port.recv() {
                 ImageReady(image) => {
@@ -95,9 +139,9 @@ impl ImageHolder {
         }
 
         // Clone isn't pure so we have to swap out the mutable image option
-        let image = util::replace(&mut self.image, None);
+        let image = mem::replace(&mut self.image, None);
         let result = image.clone();
-        util::replace(&mut self.image, image);
+        mem::replace(&mut self.image, image);
 
         return result;
     }

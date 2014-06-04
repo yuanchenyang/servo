@@ -11,107 +11,120 @@ use css::select::new_stylist;
 use css::node_style::StyledNode;
 use layout::construct::{FlowConstructionResult, NoConstructionResult};
 use layout::context::LayoutContext;
-use layout::display_list_builder::{DisplayListBuilder, ToGfxColor,Nothing};
+
 use layout::flow::{Flow, ImmutableFlowUtils, MutableFlowUtils, MutableOwnedFlowUtils};
 use layout::flow::{PreorderFlowTraversal, PostorderFlowTraversal};
 use layout::flow;
 use layout::incremental::RestyleDamage;
 use layout::parallel::PaddedUnsafeFlow;
 use layout::parallel;
-use layout::util::{LayoutDataAccess, OpaqueNode, LayoutDataWrapper};
-use layout::wrapper::{LayoutNode, TLayoutNode, ThreadSafeLayoutNode};
+use layout::util::{LayoutDataAccess, LayoutDataWrapper, OpaqueNodeMethods};
+use layout::wrapper::{LayoutNode, TLayoutNode};
 
-use extra::url::Url;
-use extra::arc::{Arc, MutexArc};
-use geom::{Point2D, Rect, SideOffsets2D};
+//use geom::{Point2D, Rect, SideOffsets2D};
+//use geom::rect::Rect;
+//use geom::size::{Size2D};
+//use gfx::color::rgb;
+//use gfx::display_list::{BaseDisplayItem, BorderDisplayItem, BorderDisplayItemClass};
+//use gfx::display_list::{ClipDisplayItemClass, DisplayItem, DisplayItemIterator};
+//use gfx::display_list::{DisplayList};
+
+//use collections::dlist::DList;
+use geom::point::Point2D;
 use geom::rect::Rect;
-use geom::size::{Size2D};
-use gfx::color::rgb;
-use gfx::display_list::{BaseDisplayItem, BorderDisplayItem, BorderDisplayItemClass};
-use gfx::display_list::{ClipDisplayItemClass, DisplayItem, DisplayItemIterator};
-use gfx::display_list::{DisplayList, DisplayListCollection};
+use geom::size::Size2D;
+use gfx::display_list::{ClipDisplayItemClass, ContentStackingLevel, DisplayItem};
+use gfx::display_list::{DisplayItemIterator, DisplayList, OpaqueNode};
+
 use gfx::font_context::{FontContext, FontContextInfo};
 use gfx::render_task::{RenderMsg, RenderChan, RenderLayer};
 use gfx::{render_task, color};
 use script::dom::bindings::js::JS;
 use script::dom::event::ReflowEvent;
-use script::dom::node::{ElementNodeTypeId, LayoutDataRef, Node};
-use script::dom::element::{HTMLBodyElementTypeId, HTMLHtmlElementTypeId};
+use script::dom::node::{LayoutDataRef, Node};
+//use script::dom::element::{HTMLBodyElementTypeId, HTMLHtmlElementTypeId};
 use script::layout_interface::{AddStylesheetMsg, ContentBoxQuery};
 use script::layout_interface::{ContentBoxesQuery, ContentBoxesResponse, ExitNowMsg, LayoutQuery};
 use script::layout_interface::{HitTestQuery, ContentBoxResponse, HitTestResponse, MouseOverQuery, MouseOverResponse};
 use script::layout_interface::{ContentChangedDocumentDamage, LayoutChan, Msg, PrepareToExitMsg};
 use script::layout_interface::{QueryMsg, ReapLayoutDataMsg, Reflow, UntrustedNodeAddress};
-use script::layout_interface::{ReflowForDisplay, ReflowMsg};
+use script::layout_interface::{ReflowMsg};
 use script::script_task::{ReflowCompleteMsg, ScriptChan, SendEventMsg};
+use servo_msg::compositor_msg::Scrollable;
 use servo_msg::constellation_msg::{ConstellationChan, PipelineId, Failure, FailureMsg};
+use servo_net::image::holder::LocalImageCacheHandle;
 use servo_net::image_cache_task::{ImageCacheTask, ImageResponseMsg};
 use servo_net::local_image_cache::{ImageResponder, LocalImageCache};
 use servo_util::geometry::Au;
+use servo_util::geometry;
 use servo_util::opts::Opts;
+use servo_util::smallvec::{SmallVec, SmallVec1};
 use servo_util::time::{ProfilerChan, profile};
 use servo_util::time;
 use servo_util::task::send_on_failure;
 use servo_util::workqueue::WorkQueue;
 use std::cast::transmute;
 use std::cast;
-use std::cell::RefCell;
-use std::comm::Port;
+use std::comm::{channel, Sender, Receiver};
+use std::mem;
 use std::ptr;
-use std::task;
-use std::util;
-use style::{AuthorOrigin, ComputedValues, Stylesheet, Stylist};
-use style::computed_values::{border_style};
-use style;
+//use std::task;
+//use style::{AuthorOrigin, ComputedValues, Stylesheet, Stylist};
+//use style::computed_values::{border_style};
+//use style;
+use std::task::TaskBuilder;
+use style::{AuthorOrigin, Stylesheet, Stylist};
+use sync::{Arc, Mutex};
+use url::Url;
 
-// use layout::libftl::PrintInfoTraversal;
 use layout::ftl_layout::{layout};
 use layout::ftl_lib::{as_ftl_node};
 
 /// Information needed by the layout task.
 pub struct LayoutTask {
     /// The ID of the pipeline that we belong to.
-    id: PipelineId,
+    pub id: PipelineId,
 
     /// The port on which we receive messages.
-    port: Port<Msg>,
+    pub port: Receiver<Msg>,
 
     //// The channel to send messages to ourself.
-    chan: LayoutChan,
+    pub chan: LayoutChan,
 
     /// The channel on which messages can be sent to the constellation.
-    constellation_chan: ConstellationChan,
+    pub constellation_chan: ConstellationChan,
 
     /// The channel on which messages can be sent to the script task.
-    script_chan: ScriptChan,
+    pub script_chan: ScriptChan,
 
     /// The channel on which messages can be sent to the painting task.
-    render_chan: RenderChan<OpaqueNode>,
+    pub render_chan: RenderChan,
 
     /// The channel on which messages can be sent to the image cache.
-    image_cache_task: ImageCacheTask,
+    pub image_cache_task: ImageCacheTask,
 
     /// The local image cache.
-    local_image_cache: MutexArc<LocalImageCache>,
+    pub local_image_cache: LocalImageCacheHandle,
 
     /// The size of the viewport.
-    screen_size: Size2D<Au>,
+    pub screen_size: Size2D<Au>,
 
     /// A cached display list.
-    display_list_collection: Option<Arc<DisplayListCollection<OpaqueNode>>>,
+    pub display_list: Option<Arc<DisplayList>>,
 
-    stylist: ~Stylist,
-
-    /// The initial set of CSS values.
-    initial_css_values: Arc<ComputedValues>,
+    pub stylist: Box<Stylist>,
 
     /// The workers that we use for parallel operation.
-    parallel_traversal: Option<WorkQueue<*mut LayoutContext,PaddedUnsafeFlow>>,
+    pub parallel_traversal: Option<WorkQueue<*mut LayoutContext,PaddedUnsafeFlow>>,
 
     /// The channel on which messages can be sent to the profiler.
-    profiler_chan: ProfilerChan,
+    pub profiler_chan: ProfilerChan,
 
-    opts: Opts
+    /// The command-line options.
+    pub opts: Opts,
+
+    /// The dirty rect. Used during display list construction.
+    pub dirty: Rect<Au>,
 }
 
 /// The damage computation traversal.
@@ -164,7 +177,7 @@ impl PreorderFlowTraversal for FlowTreeVerificationTraversal {
     #[inline]
     fn process(&mut self, flow: &mut Flow) -> bool {
         let base = flow::base(flow);
-        if !base.flags_info.flags.is_leaf() && !base.flags_info.flags.is_nonleaf() {
+        if !base.flags.is_leaf() && !base.flags.is_nonleaf() {
             println("flow tree verification failed: flow wasn't a leaf or a nonleaf!");
             flow.dump();
             fail!("flow tree verification failed")
@@ -176,7 +189,7 @@ impl PreorderFlowTraversal for FlowTreeVerificationTraversal {
 /// The bubble-widths traversal, the first part of layout computation. This computes preferred
 /// and intrinsic widths and bubbles them up the tree.
 pub struct BubbleWidthsTraversal<'a> {
-    layout_context: &'a mut LayoutContext,
+    pub layout_context: &'a mut LayoutContext,
 }
 
 impl<'a> PostorderFlowTraversal for BubbleWidthsTraversal<'a> {
@@ -197,7 +210,7 @@ impl<'a> PostorderFlowTraversal for BubbleWidthsTraversal<'a> {
 
 /// The assign-widths traversal. In Gecko this corresponds to `Reflow`.
 pub struct AssignWidthsTraversal<'a> {
-    layout_context: &'a mut LayoutContext,
+    pub layout_context: &'a mut LayoutContext,
 }
 
 impl<'a> PreorderFlowTraversal for AssignWidthsTraversal<'a> {
@@ -212,20 +225,48 @@ impl<'a> PreorderFlowTraversal for AssignWidthsTraversal<'a> {
 /// computation. Determines the final heights for all layout objects, computes positions, and
 /// computes overflow regions. In Gecko this corresponds to `FinishAndStoreOverflow`.
 pub struct AssignHeightsAndStoreOverflowTraversal<'a> {
-    layout_context: &'a mut LayoutContext,
+    pub layout_context: &'a mut LayoutContext,
 }
 
 impl<'a> PostorderFlowTraversal for AssignHeightsAndStoreOverflowTraversal<'a> {
     #[inline]
     fn process(&mut self, flow: &mut Flow) -> bool {
         flow.assign_height(self.layout_context);
-        flow.store_overflow(self.layout_context);
+        // Skip store-overflow for absolutely positioned flows. That will be
+        // done in a separate traversal.
+        if !flow.is_store_overflow_delayed() {
+            flow.store_overflow(self.layout_context);
+        }
         true
     }
 
     #[inline]
     fn should_process(&mut self, flow: &mut Flow) -> bool {
-        !flow::base(flow).flags_info.flags.inorder()
+        !flow::base(flow).flags.impacted_by_floats()
+    }
+}
+
+/// The display list construction traversal.
+pub struct BuildDisplayListTraversal<'a> {
+    layout_context: &'a LayoutContext,
+}
+
+impl<'a> BuildDisplayListTraversal<'a> {
+    #[inline]
+    fn process(&mut self, flow: &mut Flow) {
+        flow.compute_absolute_position();
+
+        for kid in flow::mut_base(flow).child_iter() {
+            if !kid.is_absolutely_positioned() {
+                self.process(kid)
+            }
+        }
+
+        for absolute_descendant_link in flow::mut_base(flow).abs_descendants.iter() {
+            self.process(absolute_descendant_link.resolve().unwrap())
+        }
+
+        flow.build_display_list(self.layout_context)
     }
 }
 
@@ -235,11 +276,12 @@ struct LayoutImageResponder {
 }
 
 impl ImageResponder for LayoutImageResponder {
-    fn respond(&self) -> proc(ImageResponseMsg) {
+    fn respond(&self) -> proc(ImageResponseMsg):Send {
         let id = self.id.clone();
         let script_chan = self.script_chan.clone();
-        let f: proc(ImageResponseMsg) = proc(_) {
-            drop(script_chan.try_send(SendEventMsg(id.clone(), ReflowEvent)))
+        let f: proc(ImageResponseMsg):Send = proc(_) {
+            let ScriptChan(chan) = script_chan;
+            drop(chan.send_opt(SendEventMsg(id.clone(), ReflowEvent)))
         };
         f
     }
@@ -248,19 +290,19 @@ impl ImageResponder for LayoutImageResponder {
 impl LayoutTask {
     /// Spawns a new layout task.
     pub fn create(id: PipelineId,
-                  port: Port<Msg>,
+                  port: Receiver<Msg>,
                   chan: LayoutChan,
                   constellation_chan: ConstellationChan,
                   failure_msg: Failure,
                   script_chan: ScriptChan,
-                  render_chan: RenderChan<OpaqueNode>,
+                  render_chan: RenderChan,
                   img_cache_task: ImageCacheTask,
                   opts: Opts,
                   profiler_chan: ProfilerChan,
-                  shutdown_chan: Chan<()>) {
-        let mut builder = task::task();
-        send_on_failure(&mut builder, FailureMsg(failure_msg), (*constellation_chan).clone());
-        builder.name("LayoutTask");
+                  shutdown_chan: Sender<()>) {
+        let mut builder = TaskBuilder::new().named("LayoutTask");
+        let ConstellationChan(con_chan) = constellation_chan.clone();
+        send_on_failure(&mut builder, FailureMsg(failure_msg), con_chan);
         builder.spawn(proc() {
             { // Ensures layout task is destroyed before we send shutdown message
                 let mut layout = LayoutTask::new(id,
@@ -280,19 +322,24 @@ impl LayoutTask {
 
     /// Creates a new `LayoutTask` structure.
     fn new(id: PipelineId,
-           port: Port<Msg>,
+           port: Receiver<Msg>,
            chan: LayoutChan,
            constellation_chan: ConstellationChan,
            script_chan: ScriptChan,
-           render_chan: RenderChan<OpaqueNode>,
+           render_chan: RenderChan,
            image_cache_task: ImageCacheTask,
            opts: &Opts,
            profiler_chan: ProfilerChan)
            -> LayoutTask {
-        let local_image_cache = MutexArc::new(LocalImageCache(image_cache_task.clone()));
+        let local_image_cache = box LocalImageCache(image_cache_task.clone());
+        let local_image_cache = unsafe {
+            let cache = Arc::new(Mutex::new(
+                cast::transmute::<Box<LocalImageCache>, *()>(local_image_cache)));
+            LocalImageCacheHandle::new(cast::transmute::<Arc<Mutex<*()>>,Arc<*()>>(cache))
+        };
         let screen_size = Size2D(Au(0), Au(0));
         let parallel_traversal = if opts.layout_threads != 1 {
-            Some(WorkQueue::new(opts.layout_threads, ptr::mut_null()))
+            Some(WorkQueue::new("LayoutWorker", opts.layout_threads, ptr::mut_null()))
         } else {
             None
         };
@@ -308,12 +355,12 @@ impl LayoutTask {
             local_image_cache: local_image_cache,
             screen_size: screen_size,
 
-            display_list_collection: None,
-            stylist: ~new_stylist(),
-            initial_css_values: Arc::new(style::initial_values()),
+            display_list: None,
+            stylist: box new_stylist(),
             parallel_traversal: parallel_traversal,
             profiler_chan: profiler_chan,
-            opts: opts.clone()
+            opts: opts.clone(),
+            dirty: Rect::zero(),
         }
     }
 
@@ -339,10 +386,10 @@ impl LayoutTask {
             layout_chan: self.chan.clone(),
             font_context_info: font_context_info,
             stylist: &*self.stylist,
-            initial_css_values: self.initial_css_values.clone(),
             url: (*url).clone(),
-            reflow_root: OpaqueNode::from_layout_node(reflow_root),
+            reflow_root: OpaqueNodeMethods::from_layout_node(reflow_root),
             opts: self.opts.clone(),
+            dirty: Rect::zero(),
         }
     }
 
@@ -384,7 +431,7 @@ impl LayoutTask {
     /// Enters a quiescent state in which no new messages except for `ReapLayoutDataMsg` will be
     /// processed until an `ExitNowMsg` is received. A pong is immediately sent on the given
     /// response channel.
-    fn prepare_to_exit(&mut self, response_chan: Chan<()>) {
+    fn prepare_to_exit(&mut self, response_chan: Sender<()>) {
         response_chan.send(());
         loop {
             match self.port.recv() {
@@ -409,7 +456,7 @@ impl LayoutTask {
     /// Shuts down the layout task now. If there are any DOM nodes left, layout will now (safely)
     /// crash.
     fn exit_now(&mut self) {
-        let (response_port, response_chan) = Chan::new();
+        let (response_chan, response_port) = channel();
 
         match self.parallel_traversal {
             None => {}
@@ -425,16 +472,24 @@ impl LayoutTask {
     }
 
     /// Retrieves the flow tree root from the root node.
-    fn get_layout_root(&self, node: LayoutNode) -> ~Flow {
+    fn get_layout_root(&self, node: LayoutNode) -> Box<Flow:Share> {
         let mut layout_data_ref = node.mutate_layout_data();
-        let result = match *layout_data_ref.get() {
-            Some(ref mut layout_data) => {
-                util::replace(&mut layout_data.data.flow_construction_result, NoConstructionResult)
+        let result = match &mut *layout_data_ref {
+            &Some(ref mut layout_data) => {
+                mem::replace(&mut layout_data.data.flow_construction_result, NoConstructionResult)
             }
-            None => fail!("no layout data for root node"),
+            &None => fail!("no layout data for root node"),
         };
         let mut flow = match result {
-            FlowConstructionResult(flow) => flow,
+            FlowConstructionResult(mut flow, abs_descendants) => {
+                // Note: Assuming that the root has display 'static' (as per
+                // CSS Section 9.3.1). Otherwise, if it were absolutely
+                // positioned, it would return a reference to itself in
+                // `abs_descendants` and would lead to a circular reference.
+                // Set Root as CB for any remaining absolute descendants.
+                flow.set_abs_descendants(abs_descendants);
+                flow
+            }
             _ => fail!("Flow construction didn't result in a flow at the root of the tree!"),
         };
         flow.mark_as_root();
@@ -493,7 +548,7 @@ impl LayoutTask {
     /// benchmarked against those two. It is marked `#[inline(never)]` to aid profiling.
     #[inline(never)]
     fn solve_constraints_parallel(&mut self,
-                                  layout_root: &mut ~Flow,
+                                  layout_root: &mut Box<Flow:Share>,
                                   layout_context: &mut LayoutContext) {
         if layout_context.opts.bubble_widths_separately {
             let mut traversal = BubbleWidthsTraversal {
@@ -519,13 +574,13 @@ impl LayoutTask {
     /// This is only on in debug builds.
     #[inline(never)]
     #[cfg(debug)]
-    fn verify_flow_tree(&mut self, layout_root: &mut ~Flow) {
+    fn verify_flow_tree(&mut self, layout_root: &mut Box<Flow:Share>) {
         let mut traversal = FlowTreeVerificationTraversal;
         layout_root.traverse_preorder(&mut traversal);
     }
 
     #[cfg(not(debug))]
-    fn verify_flow_tree(&mut self, _: &mut ~Flow) {
+    fn verify_flow_tree(&mut self, _: &mut Box<Flow:Share>) {
     }
 
     /// The high-level routine that performs layout tasks.
@@ -542,11 +597,10 @@ impl LayoutTask {
         debug!("layout: parsed Node tree");
         debug!("{:?}", node.dump());
 
-        // Reset the image cache.
-        unsafe {
-            self.local_image_cache.unsafe_access(|local_image_cache| {
-                local_image_cache.next_round(self.make_on_image_available_cb())
-            });
+        {
+            // Reset the image cache.
+            let mut local_image_cache = self.local_image_cache.get().lock();
+            local_image_cache.next_round(self.make_on_image_available_cb());
         }
 
         // true => Do the reflow with full style damage, because content
@@ -571,7 +625,7 @@ impl LayoutTask {
         // FIXME(pcwalton): This is a pretty bogus thing to do. Essentially this is a workaround
         // for libgreen having slow TLS.
         let mut font_context_opt = if self.parallel_traversal.is_none() {
-            Some(~FontContext::new(layout_ctx.font_context_info.clone()))
+            Some(box FontContext::new(layout_ctx.font_context_info.clone()))
         } else {
             None
         };
@@ -635,9 +689,6 @@ impl LayoutTask {
 
         //self.solve_constraints(layout_root, &mut layout_ctx);
 
-        //let mut lists = DisplayListCollection::<OpaqueNode>::new();
-        //lists.add_list(DisplayList::<OpaqueNode>::new());
-        //let lists = RefCell::new(lists);
 
         self.set_root_params(layout_root, &mut layout_ctx);
 
@@ -647,118 +698,107 @@ impl LayoutTask {
 
         debug!("Finished FTL");
 
-        /*
-
-        lists.with_mut(|lists| {
-            let debug_border = SideOffsets2D::new_all_same(Au::from_px(1));
-            let border_display_item = ~BorderDisplayItem {
-                base: BaseDisplayItem {
-                    bounds: Rect(Point2D(Au(0), Au(0)), Size2D(Au(10000), Au(10000))),
-                    extra: OpaqueNode(0),
-                },
-                border: debug_border,
-                color: SideOffsets2D::new_all_same(rgb(0, 0, 200)),
-                style: SideOffsets2D::new_all_same(border_style::solid)
-
-            };
-
-            let border_display_item2 = ~BorderDisplayItem {
-                base: BaseDisplayItem {
-                    bounds: Rect(Point2D(Au(5000), Au(5000)), Size2D(Au(10000), Au(10000))),
-                    extra: OpaqueNode(0),
-                },
-                border: debug_border,
-                color: SideOffsets2D::new_all_same(rgb(0, 0, 200)),
-                style: SideOffsets2D::new_all_same(border_style::solid)
-
-            };
-            lists.lists[0].append_item(BorderDisplayItemClass(border_display_item));
-            lists.lists[0].append_item(BorderDisplayItemClass(border_display_item2));
-        });
-         */
-
         let mut color = color::rgba(255.0, 255.0, 255.0, 255.0);
 
-        let mut lists = util::replace(&mut flow::mut_base(layout_root).ftl_attrs.lists,
-                                      DisplayListCollection::<OpaqueNode>::new());
+        let mut lists = mem::replace(&mut flow::mut_base(layout_root).display_list,
+                                      DisplayList::new());
 
-        let lists = Arc::new(lists);
+        let display_list = Arc::new(lists.flatten(ContentStackingLevel));
         let root_size = flow::base(layout_root).position.size;
+        let root_size = Size2D(root_size.width.to_nearest_px() as uint,
+                               root_size.height.to_nearest_px() as uint);
 
         let render_layer = RenderLayer {
-            display_list_collection: lists.clone(),
-            size: Size2D(root_size.width.to_nearest_px() as uint,
-                         root_size.height.to_nearest_px() as uint),
-            color: color
+            id: layout_root.layer_id(0),
+            display_list: display_list.clone(),
+            position: Rect(Point2D(0u, 0u), root_size),
+            background_color: color,
+            scroll_policy: Scrollable,
         };
+        /*
+        // Build the display list if necessary, and send it to the renderer.
+        if data.goal == ReflowForDisplay {
+            profile(time::LayoutDispListBuildCategory, self.profiler_chan.clone(), || {
+                layout_ctx.dirty = flow::base(layout_root).position.clone();
 
+                match self.parallel_traversal {
+                    None => {
+                        let mut traversal = BuildDisplayListTraversal {
+                            layout_context: &layout_ctx,
+                        };
+                        traversal.process(layout_root);
+                    }
+                    Some(ref mut traversal) => {
+                        parallel::build_display_list_for_subtree(&mut layout_root,
+                                                                 self.profiler_chan.clone(),
+                                                                 &mut layout_ctx,
+                                                                 traversal);
+                    }
+                }
+
+                let root_display_list = mem::replace(&mut flow::mut_base(layout_root).display_list,
+                                                     DisplayList::new());
+                let display_list = Arc::new(root_display_list.flatten(ContentStackingLevel));
+
+                // FIXME(pcwalton): This is really ugly and can't handle overflow: scroll. Refactor
+                // it with extreme prejudice.
+                let mut color = color::rgba(255.0, 255.0, 255.0, 255.0);
+                for child in node.traverse_preorder() {
+                    if child.type_id() == Some(ElementNodeTypeId(HTMLHtmlElementTypeId)) ||
+                            child.type_id() == Some(ElementNodeTypeId(HTMLBodyElementTypeId)) {
+                        let element_bg_color = {
+                            let thread_safe_child = ThreadSafeLayoutNode::new(&child);
+                            thread_safe_child.style()
+                                             .resolve_color(thread_safe_child.style()
+                                                                             .get_background()
+                                                                             .background_color)
+                                             .to_gfx_color()
+                        };
+                        match element_bg_color {
+                            color::rgba(0., 0., 0., 0.) => {}
+                            _ => {
+                                color = element_bg_color;
+                                break;
+                           }
+                        }
+                    }
+                }
+
+                let root_size = flow::base(layout_root).position.size;
+                let root_size = Size2D(root_size.width.to_nearest_px() as uint,
+                                       root_size.height.to_nearest_px() as uint);
+                let render_layer = RenderLayer {
+                    id: layout_root.layer_id(0),
+                    display_list: display_list.clone(),
+                    position: Rect(Point2D(0u, 0u), root_size),
+                    background_color: color,
+                    scroll_policy: Scrollable,
+                };
+
+                self.display_list = Some(display_list.clone());
+
+                // TODO(pcwalton): Eventually, when we have incremental reflow, this will have to
+                // be smarter in order to handle retained layer contents properly from reflow to
+                // reflow.
+                let mut layers = SmallVec1::new();
+                layers.push(render_layer);
+                for layer in mem::replace(&mut flow::mut_base(layout_root).layers,
+                                          DList::new()).move_iter() {
+                    layers.push(layer)
+                }
+                 */
 
         debug!("Layout done!");
 
-        self.display_list_collection = Some(lists.clone());
+        self.display_list = Some(display_list.clone());
 
-        self.render_chan.send(RenderMsg(render_layer));
+        let mut layers = SmallVec1::new();
+        layers.push(render_layer);
 
-
-
-        // Build the display list if necessary, and send it to the renderer.
-        // if data.goal == ReflowForDisplay {
-        //     debug!("Started display");
-        //     profile(time::LayoutDispListBuildCategory, self.profiler_chan.clone(), || {
-        //         let root_size = flow::base(layout_root).position.size;
-        //         let mut display_list_collection = DisplayListCollection::new();
-        //         display_list_collection.add_list(DisplayList::<OpaqueNode>::new());
-        //         let display_list_collection = ~RefCell::new(display_list_collection);
-        //         let dirty = flow::base(layout_root).position.clone();
-        //         let display_list_builder = DisplayListBuilder {
-        //             ctx: &layout_ctx,
-        //         };
-        //         layout_root.build_display_lists(&display_list_builder, &root_size, &dirty, 0u, display_list_collection);
-        //
-        //         let display_list_collection = Arc::new(display_list_collection.unwrap());
-        //
-        //         let mut color = color::rgba(255.0, 255.0, 255.0, 255.0);
-        //
-        //         for child in node.traverse_preorder() {
-        //             if child.type_id() == ElementNodeTypeId(HTMLHtmlElementTypeId) ||
-        //                     child.type_id() == ElementNodeTypeId(HTMLBodyElementTypeId) {
-        //                 let element_bg_color = {
-        //                     let thread_safe_child = ThreadSafeLayoutNode::new(&child);
-        //                     thread_safe_child.style()
-        //                                      .get()
-        //                                      .resolve_color(thread_safe_child.style()
-        //                                                                      .get()
-        //                                                                      .Background
-        //                                                                      .get()
-        //                                                                      .background_color)
-        //                                      .to_gfx_color()
-        //                 };
-        //                 match element_bg_color {
-        //                     color::rgba(0., 0., 0., 0.) => {}
-        //                     _ => {
-        //                         color = element_bg_color;
-        //                         break;
-        //                    }
-        //                 }
-        //             }
-        //         }
-        //
-        //         let render_layer = RenderLayer {
-        //             display_list_collection: display_list_collection.clone(),
-        //             size: Size2D(root_size.width.to_nearest_px() as uint,
-        //                          root_size.height.to_nearest_px() as uint),
-        //             color: color
-        //         };
-        //
-        //         self.display_list_collection = Some(display_list_collection.clone());
-        //
-        //         debug!("Layout done!");
-        //
-        //         self.render_chan.send(RenderMsg(render_layer));
-        //     });
-        // }
+        self.render_chan.send(RenderMsg(layers));
 
         debug!("@@@@@@@@@@@@@@@ New Flow @@@@@@@@@@@@@@@");
+
 
         layout_root.destroy();
 
@@ -767,7 +807,8 @@ impl LayoutTask {
         // FIXME(pcwalton): This should probably be *one* channel, but we can't fix this without
         // either select or a filtered recv() that only looks for messages of a given type.
         data.script_join_chan.send(());
-        data.script_chan.send(ReflowCompleteMsg(self.id, data.id));
+        let ScriptChan(ref chan) = data.script_chan;
+        chan.send(ReflowCompleteMsg(self.id, data.id));
     }
 
     /// Handles a query from the script task. This is the main routine that DOM functions like
@@ -777,15 +818,13 @@ impl LayoutTask {
             // The neat thing here is that in order to answer the following two queries we only
             // need to compare nodes for equality. Thus we can safely work only with `OpaqueNode`.
             ContentBoxQuery(node, reply_chan) => {
-                let node = OpaqueNode::from_script_node(node);
-
-                fn union_boxes_for_node<'a>(
-                                        accumulator: &mut Option<Rect<Au>>,
-                                        mut iter: DisplayItemIterator<'a,OpaqueNode>,
+                let node: OpaqueNode = OpaqueNodeMethods::from_script_node(node);
+                fn union_boxes_for_node(accumulator: &mut Option<Rect<Au>>,
+                                        mut iter: DisplayItemIterator,
                                         node: OpaqueNode) {
                     for item in iter {
                         union_boxes_for_node(accumulator, item.children(), node);
-                        if item.base().extra == node {
+                        if item.base().node == node {
                             match *accumulator {
                                 None => *accumulator = Some(item.base().bounds),
                                 Some(ref mut acc) => *acc = acc.union(&item.base().bounds),
@@ -795,52 +834,54 @@ impl LayoutTask {
                 }
 
                 let mut rect = None;
-                for display_list in self.display_list_collection.as_ref().unwrap().get().iter() {
-                    union_boxes_for_node(&mut rect, display_list.iter(), node);
+                match self.display_list {
+                    None => fail!("no display list!"),
+                    Some(ref display_list) => {
+                        union_boxes_for_node(&mut rect, display_list.iter(), node)
+                    }
                 }
-                reply_chan.send(ContentBoxResponse(rect.unwrap_or(Au::zero_rect())))
+                reply_chan.send(ContentBoxResponse(rect.unwrap_or(Rect::zero())))
             }
             ContentBoxesQuery(node, reply_chan) => {
-                let node = OpaqueNode::from_script_node(node);
+                let node: OpaqueNode = OpaqueNodeMethods::from_script_node(node);
 
-                fn add_boxes_for_node<'a>(
-                                      accumulator: &mut ~[Rect<Au>],
-                                      mut iter: DisplayItemIterator<'a,OpaqueNode>,
+                fn add_boxes_for_node(accumulator: &mut Vec<Rect<Au>>,
+                                      mut iter: DisplayItemIterator,
                                       node: OpaqueNode) {
                     for item in iter {
                         add_boxes_for_node(accumulator, item.children(), node);
-                        if item.base().extra == node {
+                        if item.base().node == node {
                             accumulator.push(item.base().bounds)
                         }
                     }
                 }
 
-                let mut boxes = ~[];
-                for display_list in self.display_list_collection.as_ref().unwrap().get().iter() {
-                    add_boxes_for_node(&mut boxes, display_list.iter(), node);
+                let mut boxes = vec!();
+                match self.display_list {
+                    None => fail!("no display list!"),
+                    Some(ref display_list) => {
+                        add_boxes_for_node(&mut boxes, display_list.iter(), node)
+                    }
                 }
                 reply_chan.send(ContentBoxesResponse(boxes))
             }
             HitTestQuery(_, point, reply_chan) => {
-                fn hit_test(x: Au, y: Au, list: &[DisplayItem<OpaqueNode>])
+                fn hit_test<'a,I:Iterator<&'a DisplayItem>>(x: Au, y: Au, mut iterator: I)
                             -> Option<HitTestResponse> {
-                    for item in list.rev_iter() {
+                    for item in iterator {
                         match *item {
                             ClipDisplayItemClass(ref cc) => {
-                                let ret = hit_test(x, y, cc.child_list);
-                                if !ret.is_none() {
-                                    return ret;
+                                if geometry::rect_contains_point(cc.base.bounds, Point2D(x, y)) {
+                                    let ret = hit_test(x, y, cc.children.list.iter().rev());
+                                    if !ret.is_none() {
+                                        return ret
+                                    }
                                 }
+                                continue
                             }
                             _ => {}
                         }
-                    }
 
-                    for item in list.rev_iter() {
-                        match *item {
-                            ClipDisplayItemClass(_) => continue,
-                            _ => {}
-                        }
                         let bounds = item.bounds();
 
                         // TODO(tikue): This check should really be performed by a method of
@@ -850,58 +891,68 @@ impl LayoutTask {
                                 y < bounds.origin.y + bounds.size.height &&
                                 bounds.origin.y <= y {
                             return Some(HitTestResponse(item.base()
-                                                            .extra
+                                                            .node
                                                             .to_untrusted_node_address()))
                         }
                     }
                     let ret: Option<HitTestResponse> = None;
                     ret
                 }
-                for display_list in self.display_list_collection.as_ref().unwrap().get().lists.rev_iter() {
-                    let (x, y) = (Au::from_frac_px(point.x as f64),
-                                  Au::from_frac_px(point.y as f64));
-                    let resp = hit_test(x,y,display_list.list);
-                    if resp.is_some() {
-                        reply_chan.send(Ok(resp.unwrap()));
-                        return
-                    }
+
+                let (x, y) = (Au::from_frac_px(point.x as f64),
+                              Au::from_frac_px(point.y as f64));
+                let resp = match self.display_list {
+                    None => fail!("no display list!"),
+                    Some(ref display_list) => hit_test(x, y, display_list.list.iter().rev()),
+                };
+                if resp.is_some() {
+                    reply_chan.send(Ok(resp.unwrap()));
+                    return
                 }
                 reply_chan.send(Err(()));
 
             }
             MouseOverQuery(_, point, reply_chan) => {
-                fn mouse_over_test(x: Au, y: Au, list: &[DisplayItem<OpaqueNode>], result: &mut ~[UntrustedNodeAddress]) {
-                    for item in list.rev_iter() {
+                fn mouse_over_test<'a,
+                                   I:Iterator<&'a DisplayItem>>(
+                                   x: Au,
+                                   y: Au,
+                                   mut iterator: I,
+                                   result: &mut Vec<UntrustedNodeAddress>) {
+                    for item in iterator {
                         match *item {
                             ClipDisplayItemClass(ref cc) => {
-                                mouse_over_test(x, y, cc.child_list, result);
+                                mouse_over_test(x, y, cc.children.list.iter().rev(), result);
                             }
-                            _ => {}
-                        }
-                    }
+                            _ => {
+                                let bounds = item.bounds();
 
-                    for item in list.rev_iter() {
-                        let bounds = item.bounds();
-
-                        // TODO(tikue): This check should really be performed by a method of
-                        // DisplayItem.
-                        if x < bounds.origin.x + bounds.size.width &&
-                                bounds.origin.x <= x &&
-                                y < bounds.origin.y + bounds.size.height &&
-                                bounds.origin.y <= y {
-                            result.push(item.base()
-                                            .extra
-                                            .to_untrusted_node_address());
+                                // TODO(tikue): This check should really be performed by a method
+                                // of DisplayItem.
+                                if x < bounds.origin.x + bounds.size.width &&
+                                        bounds.origin.x <= x &&
+                                        y < bounds.origin.y + bounds.size.height &&
+                                        bounds.origin.y <= y {
+                                    result.push(item.base()
+                                                    .node
+                                                    .to_untrusted_node_address());
+                                }
+                            }
                         }
                     }
                 }
 
-                let mut mouse_over_list:~[UntrustedNodeAddress] = ~[];
-                for display_list in self.display_list_collection.as_ref().unwrap().get().lists.rev_iter() {
-                    let (x, y) = (Au::from_frac_px(point.x as f64),
-                                  Au::from_frac_px(point.y as f64));
-                    mouse_over_test(x,y,display_list.list, &mut mouse_over_list);
-                }
+                let mut mouse_over_list: Vec<UntrustedNodeAddress> = vec!();
+                let (x, y) = (Au::from_frac_px(point.x as f64), Au::from_frac_px(point.y as f64));
+                match self.display_list {
+                    None => fail!("no display list!"),
+                    Some(ref display_list) => {
+                        mouse_over_test(x,
+                                        y,
+                                        display_list.list.iter().rev(),
+                                        &mut mouse_over_list);
+                    }
+                };
 
                 if mouse_over_list.is_empty() {
                     reply_chan.send(Err(()));
@@ -917,15 +968,15 @@ impl LayoutTask {
     // to the script task, and ultimately cause the image to be
     // re-requested. We probably don't need to go all the way back to
     // the script task for this.
-    fn make_on_image_available_cb(&self) -> ~ImageResponder:Send {
+    fn make_on_image_available_cb(&self) -> Box<ImageResponder:Send> {
         // This has a crazy signature because the image cache needs to
         // make multiple copies of the callback, and the dom event
         // channel is not a copyable type, so this is actually a
         // little factory to produce callbacks
-        ~LayoutImageResponder {
+        box LayoutImageResponder {
             id: self.id.clone(),
             script_chan: self.script_chan.clone(),
-        } as ~ImageResponder:Send
+        } as Box<ImageResponder:Send>
     }
 
     /// Handles a message to destroy layout data. Layout data must be destroyed on *this* task
@@ -933,6 +984,6 @@ impl LayoutTask {
     unsafe fn handle_reap_layout_data(&self, layout_data: LayoutDataRef) {
         let mut layout_data_ref = layout_data.borrow_mut();
         let _: Option<LayoutDataWrapper> = cast::transmute(
-            util::replace(layout_data_ref.get(), None));
+            mem::replace(&mut *layout_data_ref, None));
     }
 }

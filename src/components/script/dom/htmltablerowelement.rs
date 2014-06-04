@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLTableRowElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLTableRowElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLTableRowElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLTableRowElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -15,89 +15,104 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLTableRowElement {
-    htmlelement: HTMLElement,
+    pub htmlelement: HTMLElement,
 }
 
 impl HTMLTableRowElementDerived for EventTarget {
     fn is_htmltablerowelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLTableRowElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLTableRowElementTypeId))
     }
 }
 
 impl HTMLTableRowElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLTableRowElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLTableRowElement {
         HTMLTableRowElement {
             htmlelement: HTMLElement::new_inherited(HTMLTableRowElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLTableRowElement> {
-        let element = HTMLTableRowElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLTableRowElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLTableRowElement> {
+        let element = HTMLTableRowElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLTableRowElementBinding::Wrap)
     }
 }
 
-impl HTMLTableRowElement {
-    pub fn RowIndex(&self) -> i32 {
+pub trait HTMLTableRowElementMethods {
+    fn RowIndex(&self) -> i32;
+    fn GetRowIndex(&self) -> i32;
+    fn SectionRowIndex(&self) -> i32;
+    fn GetSectionRowIndex(&self) -> i32;
+    fn DeleteCell(&mut self, _index: i32) -> ErrorResult;
+    fn Align(&self) -> DOMString;
+    fn SetAlign(&self, _align: DOMString) -> ErrorResult;
+    fn Ch(&self) -> DOMString;
+    fn SetCh(&self, _ch: DOMString) -> ErrorResult;
+    fn ChOff(&self) -> DOMString;
+    fn SetChOff(&self, _ch_off: DOMString) -> ErrorResult;
+    fn VAlign(&self) -> DOMString;
+    fn SetVAlign(&self, _v_align: DOMString) -> ErrorResult;
+    fn BgColor(&self) -> DOMString;
+    fn SetBgColor(&self, _bg_color: DOMString) -> ErrorResult;
+}
+
+impl<'a> HTMLTableRowElementMethods for JSRef<'a, HTMLTableRowElement> {
+    fn RowIndex(&self) -> i32 {
         0
     }
 
-    pub fn GetRowIndex(&self) -> i32 {
+    fn GetRowIndex(&self) -> i32 {
         0
     }
 
-    pub fn SectionRowIndex(&self) -> i32 {
+    fn SectionRowIndex(&self) -> i32 {
         0
     }
 
-    pub fn GetSectionRowIndex(&self) -> i32 {
+    fn GetSectionRowIndex(&self) -> i32 {
         0
     }
 
-    pub fn DeleteCell(&mut self, _index: i32) -> ErrorResult {
+    fn DeleteCell(&mut self, _index: i32) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Align(&self) -> DOMString {
-        ~""
+    fn Align(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetAlign(&self, _align: DOMString) -> ErrorResult {
+    fn SetAlign(&self, _align: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Ch(&self) -> DOMString {
-        ~""
+    fn Ch(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetCh(&self, _ch: DOMString) -> ErrorResult {
+    fn SetCh(&self, _ch: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn ChOff(&self) -> DOMString {
-        ~""
+    fn ChOff(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetChOff(&self, _ch_off: DOMString) -> ErrorResult {
+    fn SetChOff(&self, _ch_off: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn VAlign(&self) -> DOMString {
-        ~""
+    fn VAlign(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetVAlign(&self, _v_align: DOMString) -> ErrorResult {
+    fn SetVAlign(&self, _v_align: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn BgColor(&self) -> DOMString {
-        ~""
+    fn BgColor(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetBgColor(&self, _bg_color: DOMString) -> ErrorResult {
+    fn SetBgColor(&self, _bg_color: DOMString) -> ErrorResult {
         Ok(())
     }
 }

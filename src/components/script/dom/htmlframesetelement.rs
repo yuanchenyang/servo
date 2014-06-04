@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLFrameSetElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLFrameSetElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLFrameSetElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLFrameSetElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -15,45 +15,49 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLFrameSetElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLFrameSetElementDerived for EventTarget {
     fn is_htmlframesetelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLFrameSetElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLFrameSetElementTypeId))
     }
 }
 
 impl HTMLFrameSetElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLFrameSetElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLFrameSetElement {
         HTMLFrameSetElement {
             htmlelement: HTMLElement::new_inherited(HTMLFrameSetElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLFrameSetElement> {
-        let element = HTMLFrameSetElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLFrameSetElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLFrameSetElement> {
+        let element = HTMLFrameSetElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLFrameSetElementBinding::Wrap)
     }
 }
 
-impl HTMLFrameSetElement {
-    pub fn Cols(&self) -> DOMString {
-        ~""
+pub trait HTMLFrameSetElementMethods {
+    fn Cols(&self) -> DOMString;
+    fn SetCols(&mut self, _cols: DOMString) -> ErrorResult;
+    fn Rows(&self) -> DOMString;
+    fn SetRows(&mut self, _rows: DOMString) -> ErrorResult;
+}
+
+impl<'a> HTMLFrameSetElementMethods for JSRef<'a, HTMLFrameSetElement> {
+    fn Cols(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetCols(&mut self, _cols: DOMString) -> ErrorResult {
+    fn SetCols(&mut self, _cols: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Rows(&self) -> DOMString {
-        ~""
+    fn Rows(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetRows(&mut self, _rows: DOMString) -> ErrorResult {
+    fn SetRows(&mut self, _rows: DOMString) -> ErrorResult {
         Ok(())
     }
 }

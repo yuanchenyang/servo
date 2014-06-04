@@ -7,110 +7,119 @@
 
 use azure::azure_hl::{BackendType, CairoBackend, CoreGraphicsBackend};
 use azure::azure_hl::{CoreGraphicsAcceleratedBackend, Direct2DBackend, SkiaBackend};
-use extra::getopts::groups;
-use std::num;
+use getopts;
+use std::cmp;
+use std::io;
+use std::os;
 use std::rt;
 
 /// Global flags for Servo, currently set on the command line.
 #[deriving(Clone)]
 pub struct Opts {
     /// The initial URLs to load.
-    urls: ~[~str],
+    pub urls: Vec<~str>,
 
     /// The rendering backend to use (`-r`).
-    render_backend: BackendType,
+    pub render_backend: BackendType,
 
     /// How many threads to use for CPU rendering (`-t`).
     ///
     /// FIXME(pcwalton): This is not currently used. All rendering is sequential.
-    n_render_threads: uint,
+    pub n_render_threads: uint,
 
     /// True to use CPU painting, false to use GPU painting via Skia-GL (`-c`). Note that
     /// compositing is always done on the GPU.
-    cpu_painting: bool,
+    pub cpu_painting: bool,
 
     /// The maximum size of each tile in pixels (`-s`).
-    tile_size: uint,
+    pub tile_size: uint,
 
     /// `None` to disable the profiler or `Some` with an interval in seconds to enable it and cause
     /// it to produce output on that interval (`-p`).
-    profiler_period: Option<f64>,
+    pub profiler_period: Option<f64>,
 
     /// The number of threads to use for layout (`-y`). Defaults to 1, which results in a recursive
     /// sequential algorithm.
-    layout_threads: uint,
+    pub layout_threads: uint,
 
     /// True to exit after the page load (`-x`).
-    exit_after_load: bool,
+    pub exit_after_load: bool,
 
-    output_file: Option<~str>,
-    headless: bool,
-    hard_fail: bool,
+    pub output_file: Option<~str>,
+    pub headless: bool,
+    pub hard_fail: bool,
 
     /// True if we should bubble intrinsic widths sequentially (`-b`). If this is true, then
     /// intrinsic widths are computed as a separate pass instead of during flow construction. You
     /// may wish to turn this flag on in order to benchmark style recalculation against other
     /// browser engines.
-    bubble_widths_separately: bool,
+    pub bubble_widths_separately: bool,
 }
 
-fn print_usage(app: &str, opts: &[groups::OptGroup]) {
+fn print_usage(app: &str, opts: &[getopts::OptGroup]) {
     let message = format!("Usage: {} [ options ... ] [URL]\n\twhere options include", app);
-    println(groups::usage(message, opts));
+    println!("{}", getopts::usage(message, opts));
 }
 
-pub fn from_cmdline_args(args: &[~str]) -> Opts {
+fn args_fail(msg: &str) {
+    io::stderr().write_line(msg).unwrap();
+    os::set_exit_status(1);
+}
+
+pub fn from_cmdline_args(args: &[~str]) -> Option<Opts> {
     let app_name = args[0].to_str();
     let args = args.tail();
 
     let opts = ~[
-        groups::optflag("c", "cpu", "CPU rendering"),
-        groups::optopt("o", "output", "Output file", "output.png"),
-        groups::optopt("r", "rendering", "Rendering backend", "direct2d|core-graphics|core-graphics-accelerated|cairo|skia."),
-        groups::optopt("s", "size", "Size of tiles", "512"),
-        groups::optopt("t", "threads", "Number of render threads", "1"),
-        groups::optflagopt("p", "profile", "Profiler flag and output interval", "10"),
-        groups::optflag("x", "exit", "Exit after load flag"),
-        groups::optopt("y", "layout-threads", "Number of threads to use for layout", "1"),
-        groups::optflag("z", "headless", "Headless mode"),
-        groups::optflag("f", "hard-fail", "Exit on task failure instead of displaying about:failure"),
-        groups::optflag("b", "bubble-widths", "Bubble intrinsic widths separately like other engines"),
-        groups::optflag("h", "help", "Print this message")
+        getopts::optflag("c", "cpu", "CPU rendering"),
+        getopts::optopt("o", "output", "Output file", "output.png"),
+        getopts::optopt("r", "rendering", "Rendering backend", "direct2d|core-graphics|core-graphics-accelerated|cairo|skia."),
+        getopts::optopt("s", "size", "Size of tiles", "512"),
+        getopts::optopt("t", "threads", "Number of render threads", "1"),
+        getopts::optflagopt("p", "profile", "Profiler flag and output interval", "10"),
+        getopts::optflag("x", "exit", "Exit after load flag"),
+        getopts::optopt("y", "layout-threads", "Number of threads to use for layout", "1"),
+        getopts::optflag("z", "headless", "Headless mode"),
+        getopts::optflag("f", "hard-fail", "Exit on task failure instead of displaying about:failure"),
+        getopts::optflag("b", "bubble-widths", "Bubble intrinsic widths separately like other engines"),
+        getopts::optflag("h", "help", "Print this message")
     ];
 
-    let opt_match = match groups::getopts(args, opts) {
+    let opt_match = match getopts::getopts(args, opts) {
         Ok(m) => m,
-        Err(f) => fail!(f.to_err_msg()),
+        Err(f) => {
+            args_fail(f.to_err_msg());
+            return None;
+        }
     };
 
     if opt_match.opt_present("h") || opt_match.opt_present("help") {
         print_usage(app_name, opts);
-        // TODO: how to return a null struct and let the caller know that
-        // it should abort?
-        fail!("")
+        return None;
     };
 
     let urls = if opt_match.free.is_empty() {
         print_usage(app_name, opts);
-        fail!(~"servo asks that you provide 1 or more URLs")
+        args_fail("servo asks that you provide 1 or more URLs");
+        return None;
     } else {
         opt_match.free.clone()
     };
 
     let render_backend = match opt_match.opt_str("r") {
         Some(backend_str) => {
-            if backend_str == ~"direct2d" {
+            if "direct2d" == backend_str {
                 Direct2DBackend
-            } else if backend_str == ~"core-graphics" {
+            } else if "core-graphics" == backend_str {
                 CoreGraphicsBackend
-            } else if backend_str == ~"core-graphics-accelerated" {
+            } else if "core-graphics-accelerated" == backend_str {
                 CoreGraphicsAcceleratedBackend
-            } else if backend_str == ~"cairo" {
+            } else if "cairo" == backend_str {
                 CairoBackend
-            } else if backend_str == ~"skia" {
+            } else if "skia" == backend_str {
                 SkiaBackend
             } else {
-                fail!(~"unknown backend type")
+                fail!("unknown backend type")
             }
         }
         None => SkiaBackend
@@ -135,10 +144,10 @@ pub fn from_cmdline_args(args: &[~str]) -> Opts {
 
     let layout_threads: uint = match opt_match.opt_str("y") {
         Some(layout_threads_str) => from_str(layout_threads_str).unwrap(),
-        None => num::max(rt::default_sched_threads() * 3 / 4, 1),
+        None => cmp::max(rt::default_sched_threads() * 3 / 4, 1),
     };
 
-    Opts {
+    Some(Opts {
         urls: urls,
         render_backend: render_backend,
         n_render_threads: n_render_threads,
@@ -151,5 +160,5 @@ pub fn from_cmdline_args(args: &[~str]) -> Opts {
         headless: opt_match.opt_present("z"),
         hard_fail: opt_match.opt_present("f"),
         bubble_widths_separately: opt_match.opt_present("b"),
-    }
+    })
 }

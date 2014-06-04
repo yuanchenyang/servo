@@ -2,27 +2,39 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#[crate_id = "github.com/mozilla/servo#script:0.1"];
-#[crate_type = "lib"];
+#![crate_id = "github.com/mozilla/servo#script:0.1"]
+#![crate_type = "lib"]
+#![crate_type = "dylib"]
+#![crate_type = "rlib"]
 
-#[comment = "The Servo Parallel Browser Project"];
-#[license = "MPL"];
+#![comment = "The Servo Parallel Browser Project"]
+#![license = "MPL"]
 
-#[feature(globs, macro_rules, struct_variant, managed_boxes)];
+#![feature(globs, macro_rules, struct_variant, phase)]
 
-extern mod geom;
-extern mod hubbub;
-extern mod encoding;
-extern mod js;
-extern mod servo_net = "net";
-extern mod servo_util = "util";
-extern mod style;
-extern mod servo_msg = "msg";
-extern mod extra;
-extern mod native;
+#![feature(phase)]
+#[phase(syntax, link)]
+extern crate log;
 
-// Macros
-mod macros;
+extern crate collections;
+extern crate geom;
+extern crate hubbub;
+extern crate encoding;
+extern crate http;
+extern crate js;
+extern crate libc;
+extern crate native;
+extern crate net;
+extern crate serialize;
+extern crate time;
+#[phase(syntax)]
+extern crate servo_macros = "macros";
+extern crate servo_net = "net";
+extern crate servo_util = "util";
+extern crate style;
+extern crate sync;
+extern crate servo_msg = "msg";
+extern crate url;
 
 pub mod dom {
     pub mod bindings {
@@ -30,33 +42,35 @@ pub mod dom {
         pub mod element;
         pub mod utils;
         pub mod callback;
+        pub mod error;
         pub mod conversions;
         pub mod proxyhandler;
+        pub mod str;
         pub mod trace;
         pub mod codegen {
-            pub use self::BindingDeclarations::*;
+            pub mod EventHandlerBinding;
             pub mod InterfaceTypes;
             pub mod InheritTypes;
             pub mod PrototypeList;
             pub mod RegisterBindings;
             pub mod BindingDeclarations;
-            pub mod UnionConversions;
             pub mod UnionTypes;
         }
     }
 
-    pub mod types {
-        pub use super::bindings::codegen::InterfaceTypes::*;
-    }
+    #[path="bindings/codegen/InterfaceTypes.rs"]
+    pub mod types;
 
     pub mod attr;
     pub mod attrlist;
     pub mod blob;
+    pub mod browsercontext;
     pub mod characterdata;
     pub mod clientrect;
     pub mod clientrectlist;
     pub mod comment;
     pub mod console;
+    pub mod customevent;
     pub mod document;
     pub mod documentfragment;
     pub mod documenttype;
@@ -145,11 +159,19 @@ pub mod dom {
     pub mod node;
     pub mod nodelist;
     pub mod processinginstruction;
+    pub mod performance;
+    pub mod performancetiming;
+    pub mod progressevent;
     pub mod uievent;
     pub mod text;
     pub mod validitystate;
+    pub mod virtualmethods;
     pub mod window;
-    pub mod windowproxy;
+    pub mod xmlhttprequest;
+    pub mod xmlhttprequesteventtarget;
+    pub mod xmlhttprequestupload;
+
+    pub mod testbinding;
 }
 
 pub mod html {

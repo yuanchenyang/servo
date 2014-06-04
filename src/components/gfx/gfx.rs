@@ -2,43 +2,51 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#[crate_id = "github.com/mozilla/servo#gfx:0.1"];
-#[crate_type = "lib"];
+#![crate_id = "github.com/mozilla/servo#gfx:0.1"]
+#![crate_type = "lib"]
+#![crate_type = "dylib"]
+#![crate_type = "rlib"]
 
-#[feature(globs, managed_boxes, macro_rules)];
+#![feature(globs, macro_rules, phase)]
 
-extern mod azure;
-extern mod extra;
-extern mod geom;
-extern mod layers;
-extern mod stb_image;
-extern mod png;
-extern mod servo_net = "net";
-extern mod servo_util = "util";
-extern mod style;
-extern mod servo_msg = "msg";
+#![feature(phase)]
+#[phase(syntax, link)]
+extern crate log;
+
+extern crate azure;
+extern crate collections;
+extern crate geom;
+extern crate layers;
+extern crate libc;
+extern crate stb_image;
+extern crate png;
+#[phase(syntax)]
+extern crate servo_macros = "macros";
+extern crate servo_net = "net";
+#[phase(syntax, link)]
+extern crate servo_util = "util";
+extern crate servo_msg = "msg";
+extern crate style;
+extern crate sync;
 
 // Eventually we would like the shaper to be pluggable, as many operating systems have their own
 // shapers. For now, however, this is a hard dependency.
-extern mod harfbuzz;
+extern crate harfbuzz;
 
 // Linux and Android-specific library dependencies
-#[cfg(target_os="linux")] #[cfg(target_os="android")] extern mod fontconfig;
-#[cfg(target_os="linux")] #[cfg(target_os="android")] extern mod freetype;
+#[cfg(target_os="linux")] #[cfg(target_os="android")] extern crate fontconfig;
+#[cfg(target_os="linux")] #[cfg(target_os="android")] extern crate freetype;
 
 // Mac OS-specific library dependencies
-#[cfg(target_os="macos")] extern mod core_foundation;
-#[cfg(target_os="macos")] extern mod core_graphics;
-#[cfg(target_os="macos")] extern mod core_text;
+#[cfg(target_os="macos")] extern crate core_foundation;
+#[cfg(target_os="macos")] extern crate core_graphics;
+#[cfg(target_os="macos")] extern crate core_text;
 
 pub use gfx_font = font;
 pub use gfx_font_context = font_context;
 pub use gfx_font_list = font_list;
 pub use servo_gfx_font = font;
 pub use servo_gfx_font_list = font_list;
-
-// Macros
-mod macros;
 
 // Private rendering modules
 mod render_context;

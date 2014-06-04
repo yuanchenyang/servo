@@ -73,7 +73,7 @@ putvar() {
     else
         printf "configure: %-20s := %s %s\n" $1 "$T" "$2"
     fi
-    printf "%-20s ?= %s\n" $1 "$T" >>${CFG_SRC_DIR}config.tmp
+    printf "%-20s ?= %s\n" $1 "$T" >>${CFG_BUILD_HOME}config.tmp
 }
 
 probe() {
@@ -192,10 +192,10 @@ split_triple() {
     eval $VENDOR=$(echo "$TRIPLE" | cut -d'-' -f2)
     eval $OS=$(echo "$TRIPLE" | cut -d'-' -f3)
 
-        if [ $(echo "$TRIPLE" | cut -d'-' -f3) = "androideabi" ]
-        then
-            eval $OS="android"
-        fi
+    if [ $(echo "$TRIPLE" | cut -d'-' -f3) = "androideabi" ]
+    then
+        eval $OS="android"
+    fi
 }
 
 os_type() {
@@ -300,7 +300,7 @@ fi
 os_type CFG_BUILD_OSTYPE ${OSTYPE}
 cpu_type CFG_BUILD_CPUTYPE ${CPUTYPE}
 
-DEFAULT_TARGET_TRIPLE="${CFG_BUILD_CPUTYPE}-${CFG_BUILD_OSTYPE}"
+DEFAULT_TARGET="${CFG_BUILD_CPUTYPE}-${CFG_BUILD_OSTYPE}"
 
 CFG_SRC_DIR="$(cd $(dirname $0) && pwd)/"
 CFG_BUILD_HOME="$(pwd)/"
@@ -318,7 +318,7 @@ fi
 
 OPTIONS=""
 HELP=0
-if [ "$1" = "--help" ]
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]
 then
     HELP=1
     shift
@@ -329,7 +329,7 @@ then
     echo ""
 else
     msg "recreating config.tmp"
-    echo '' >${CFG_SRC_DIR}config.tmp
+    echo '' >${CFG_BUILD_HOME}config.tmp
 
     step_msg "processing $CFG_SELF args"
 fi
@@ -341,7 +341,7 @@ opt fast-make 0 "use .gitmodules as timestamp for submodule deps"
 opt debug 0 "build with debugging code and symbols"
 opt debug-skia 0 "build Skia and Azure for debugging (significant performance hit)"
 valopt local-rust-root "" "set prefix for local rust binary"
-valopt target-triples "${DEFAULT_TARGET_TRIPLE}" "target triple to be compiled"
+valopt target "${DEFAULT_TARGET}" "target to be compiled"
 valopt android-cross-path "/opt/ndk_standalone" "Android NDK cross compiler path"
 valopt android-ndk-path "/opt/android-ndk" "Android NDK path"
 valopt android-sdk-path "/opt/android-sdk" "Android SDK path"
@@ -355,7 +355,7 @@ then
 fi
 
 # Split target triple
-split_triple "${CFG_TARGET_TRIPLES}" TARGET_CPUTYPE TARGET_VENDOR TARGET_OSTYPE
+split_triple "${CFG_TARGET}" TARGET_CPUTYPE TARGET_VENDOR TARGET_OSTYPE
 
 # Set target os and cpu type
 os_type CFG_OSTYPE ${TARGET_OSTYPE}
@@ -385,7 +385,6 @@ case ${TARGET_OSTYPE} in
         probe CFG_RANLIB	       arm-linux-androideabi-ranlib
 
         export PATH=${OLD_PATH}
-        CFG_RUSTC_FLAGS="--target=${CFG_TARGET_TRIPLES} --android-cross-path=${CFG_ANDROID_CROSS_PATH}"
         ;;
     *)
         CFG_PATH=$PATH
@@ -400,7 +399,7 @@ esac
 
 probe CFG_CLANG            clang++
 
-CFG_BUILD_DIR="${CFG_BUILD_HOME}${CFG_TARGET_TRIPLES}/"
+CFG_BUILD_DIR="${CFG_BUILD_HOME}${CFG_TARGET}/"
 make_dir "${CFG_BUILD_DIR}"
 
 if [ ! -z "$CFG_LOCAL_RUST_ROOT" ]
@@ -418,8 +417,8 @@ then
 else
     step_msg "using in-tree rust compiler"
     # The Rust compiler we're going to build
-    CFG_RUSTC="${CFG_BUILD_DIR}src/compiler/rust/${DEFAULT_TARGET_TRIPLE}/stage2/bin/rustc"
-    CFG_RUST_HOME="${CFG_BUILD_DIR}src/compiler/rust/${DEFAULT_TARGET_TRIPLE}/stage2"
+    CFG_RUSTC="${CFG_BUILD_DIR}src/compiler/rust/${DEFAULT_TARGET}/stage2/bin/rustc"
+    CFG_RUST_HOME="${CFG_BUILD_DIR}src/compiler/rust/${DEFAULT_TARGET}/stage2"
 fi
 
 if [ -z "$CFG_ENABLE_CLANG" -a -z "$CFG_CC" ]
@@ -494,8 +493,6 @@ CFG_SUBMODULES="\
     support/hubbub/libhubbub \
     support/hubbub/rust-hubbub \
     support/libparserutils/libparserutils \
-    support/nss/nspr \
-    support/nss/nss \
     support/skia/skia \
     support/spidermonkey/mozjs \
     support/spidermonkey/rust-mozjs \
@@ -524,6 +521,7 @@ if [ $CFG_OSTYPE = "unknown-linux-gnu" ]
 then
 CFG_SUBMODULES="\
     platform/linux/rust-xlib \
+    platform/linux/fontconfig \
     support/glfw/glfw \
     support/glfw/glfw-rs \
     platform/linux/rust-fontconfig \
@@ -546,7 +544,7 @@ fi
 
 step_msg "writing configuration"
 
-putvar CFG_TARGET_TRIPLES
+putvar CFG_TARGET
 putvar CFG_CPUTYPE
 putvar CFG_OSTYPE
 putvar CFG_SRC_DIR
@@ -566,10 +564,10 @@ putvar CFG_ENABLE_DEBUG_SKIA
 
 msg
 copy_if_changed ${CFG_SRC_DIR}Makefile.in ${CFG_BUILD_HOME}Makefile
-move_if_changed ${CFG_SRC_DIR}config.tmp ${CFG_SRC_DIR}config.mk
-copy_if_changed ${CFG_SRC_DIR}config.mk ${CFG_BUILD_HOME}config.mk
-rm -f ${CFG_SRC_DIR}config.tmp
-touch ${CFG_SRC_DIR}config.stamp
+move_if_changed ${CFG_BUILD_HOME}config.tmp ${CFG_BUILD_HOME}config.mk
+copy_if_changed ${CFG_BUILD_HOME}config.mk ${CFG_SRC_DIR}/.config.mk.last
+rm -f ${CFG_BUILD_HOME}config.tmp
+touch ${CFG_BUILD_HOME}config.stamp
 
 export CFG_CONFIG_MK="${CFG_BUILD_HOME}config.mk"
 
@@ -582,7 +580,9 @@ do
     make_dir ${CFG_BUILD_DIR}src/${i}
 done
 
+make_dir ${CFG_BUILD_DIR}src/components/macros
 make_dir ${CFG_BUILD_DIR}src/components/util
+make_dir ${CFG_BUILD_DIR}src/components/embedding
 make_dir ${CFG_BUILD_DIR}src/components/msg
 make_dir ${CFG_BUILD_DIR}src/components/net
 make_dir ${CFG_BUILD_DIR}src/components/gfx
@@ -621,7 +621,7 @@ then
     cd ${CFG_BUILD_DIR}
 fi
 
-#fontconfig expects to use an installed freetype, but we want to override that behavior to use our version
+# fontconfig expects to use an installed freetype, but we want to use our version on Android
 if [ $CFG_OSTYPE = "linux-androideabi" ]
 then
     export FREETYPE_CFLAGS="-I${CFG_SRC_DIR}src/platform/android/libfreetype2/include -I${CFG_BUILD_DIR}src/platform/android/libfreetype2/include"
@@ -652,23 +652,6 @@ do
     ENABLE_DEBUG="$CFG_ENABLE_DEBUG"
 
     case $i in
-        support/nss/nspr)
-            if [ ${CFG_OSTYPE} = "linux-androideabi" ]; then
-            CONFIGURE_ARGS="${CONFIGURE_ARGS} --target=arm-linux-androideabi"
-            CONFIGURE_ARGS="${CONFIGURE_ARGS} --with-android-ndk=${CFG_ANDROID_NDK_PATH}"
-            CONFIGURE_ARGS="${CONFIGURE_ARGS} --with-android-toolchain=${CFG_ANDROID_CROSS_PATH}"
-            else
-            CONFIGURE_ARGS="${CONFIGURE_ARGS} --enable-64bit"
-            fi
-            ;;
-        support/nss/nss)
-            if [ ${CFG_OSTYPE} = "linux-androideabi" ]; then
-            CONFIGURE_ARGS="${CONFIGURE_ARGS} --host=arm-linux-androideabi"
-            CONFIGURE_ARGS="${CONFIGURE_ARGS} --android-toolchain=${CFG_ANDROID_CROSS_PATH}"
-            CONFIGURE_ARGS="${CONFIGURE_ARGS} --android-api-version=14"
-            fi
-            CONFIGURE_ARGS="${CONFIGURE_ARGS} ${EXTRA_CONFIGURE_ARGS}"
-            ;;
         platform/android/libexpat)
             CONFIGURE_SCRIPT="${CFG_SRC_DIR}src/${i}/expat/configure"
             CONFIGURE_ARGS="${CONFIGURE_ARGS} --host=arm-linux-androideabi"
@@ -679,6 +662,19 @@ do
             CONFIGURE_ARGS="${CONFIGURE_ARGS} --host=arm-linux"
             CONFIGURE_ARGS="${CONFIGURE_ARGS} --with-sysroot=${CFG_ANDROID_CROSS_PATH}/sysroot"
             CONFIGURE_ARGS="${CONFIGURE_ARGS} --without-zlib"
+            CONFIGURE_ARGS="${CONFIGURE_ARGS} ${EXTRA_CONFIGURE_ARGS}"
+            ;;
+        platform/linux/fontconfig)
+            CONFIGURE_SCRIPT="${CFG_SRC_DIR}src/${i}/autogen.sh"
+            CONFIGURE_ARGS="${CONFIGURE_ARGS} --sysconfdir=/etc"
+            CONFIGURE_ARGS="${CONFIGURE_ARGS} --localstatedir=/var"
+            CONFIGURE_ARGS="${CONFIGURE_ARGS} --disable-docs"
+            CONFIGURE_ARGS="${CONFIGURE_ARGS} --disable-shared" # work around Rust #12557
+            if [ -f /etc/redhat-release ]; then
+                # Some RedHat-based distros (including our CentOS 6 build machines) are missing
+                # pkg-config files for expat: https://bugzilla.redhat.com/show_bug.cgi?id=833338
+                CONFIGURE_ARGS="${CONFIGURE_ARGS} --with-expat=/usr"
+            fi
             CONFIGURE_ARGS="${CONFIGURE_ARGS} ${EXTRA_CONFIGURE_ARGS}"
             ;;
         platform/android/fontconfig)
@@ -701,6 +697,7 @@ do
                 CONFIGURE_ARGS="${CONFIGURE_ARGS} --with-android-ndk=${CFG_ANDROID_NDK_PATH}"
                 CONFIGURE_ARGS="${CONFIGURE_ARGS} --with-android-toolchain=${CFG_ANDROID_CROSS_PATH}"
             fi
+            CONFIGURE_ARGS="${CONFIGURE_ARGS} --enable-gczeal"
             ;;
         support/skia/skia)
             # Right now the skia configure script actually ignores --enable-debug and the
@@ -725,8 +722,7 @@ do
         CONFIGURE_ARGS="${CONFIGURE_ARGS} --enable-debug"
     fi
 
-    if [ -f ${CONFIGURE_SCRIPT} ]
-    then
+    if [ -f ${CONFIGURE_SCRIPT} ]; then
 	(sh ${CONFIGURE_SCRIPT} ${CONFIGURE_ARGS}) || exit $?
     fi
 done

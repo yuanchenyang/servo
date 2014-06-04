@@ -2,107 +2,118 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLOutputElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLOutputElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLOutputElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLOutputElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
 use dom::htmlelement::HTMLElement;
 use dom::htmlformelement::HTMLFormElement;
-use dom::node::{Node, ElementNodeTypeId};
+use dom::node::{Node, ElementNodeTypeId, window_from_node};
 use dom::validitystate::ValidityState;
 use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLOutputElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLOutputElementDerived for EventTarget {
     fn is_htmloutputelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLOutputElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLOutputElementTypeId))
     }
 }
 
 impl HTMLOutputElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLOutputElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLOutputElement {
         HTMLOutputElement {
             htmlelement: HTMLElement::new_inherited(HTMLOutputElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLOutputElement> {
-        let element = HTMLOutputElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLOutputElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLOutputElement> {
+        let element = HTMLOutputElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLOutputElementBinding::Wrap)
     }
 }
 
-impl HTMLOutputElement {
-    pub fn GetForm(&self) -> Option<JS<HTMLFormElement>> {
+pub trait HTMLOutputElementMethods {
+    fn GetForm(&self) -> Option<Temporary<HTMLFormElement>>;
+    fn Name(&self) -> DOMString;
+    fn SetName(&mut self, _name: DOMString) -> ErrorResult;
+    fn Type(&self) -> DOMString;
+    fn DefaultValue(&self) -> DOMString;
+    fn SetDefaultValue(&mut self, _value: DOMString) -> ErrorResult;
+    fn Value(&self) -> DOMString;
+    fn SetValue(&mut self, _value: DOMString) -> ErrorResult;
+    fn WillValidate(&self) -> bool;
+    fn SetWillValidate(&mut self, _will_validate: bool);
+    fn Validity(&self) -> Temporary<ValidityState>;
+    fn ValidationMessage(&self) -> DOMString;
+    fn SetValidationMessage(&mut self, _message: DOMString) -> ErrorResult;
+    fn CheckValidity(&self) -> bool;
+    fn SetCustomValidity(&mut self, _error: DOMString);
+}
+
+impl<'a> HTMLOutputElementMethods for JSRef<'a, HTMLOutputElement> {
+    fn GetForm(&self) -> Option<Temporary<HTMLFormElement>> {
         None
     }
 
-    pub fn Name(&self) -> DOMString {
-        ~""
+    fn Name(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetName(&mut self, _name: DOMString) -> ErrorResult {
+    fn SetName(&mut self, _name: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Type(&self) -> DOMString {
-        ~""
+    fn Type(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn DefaultValue(&self) -> DOMString {
-        ~""
+    fn DefaultValue(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetDefaultValue(&mut self, _value: DOMString) -> ErrorResult {
+    fn SetDefaultValue(&mut self, _value: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Value(&self) -> DOMString {
-        ~""
+    fn Value(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetValue(&mut self, _value: DOMString) -> ErrorResult {
+    fn SetValue(&mut self, _value: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn WillValidate(&self) -> bool {
+    fn WillValidate(&self) -> bool {
         false
     }
 
-    pub fn SetWillValidate(&mut self, _will_validate: bool) {
+    fn SetWillValidate(&mut self, _will_validate: bool) {
     }
 
-    pub fn Validity(&self) -> JS<ValidityState> {
-        let doc = self.htmlelement.element.node.owner_doc();
-        let doc = doc.get();
-        ValidityState::new(&doc.window)
+    fn Validity(&self) -> Temporary<ValidityState> {
+        let window = window_from_node(self).root();
+        ValidityState::new(&*window)
     }
 
-    pub fn SetValidity(&mut self, _validity: JS<ValidityState>) {
+    fn ValidationMessage(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn ValidationMessage(&self) -> DOMString {
-        ~""
-    }
-
-    pub fn SetValidationMessage(&mut self, _message: DOMString) -> ErrorResult {
+    fn SetValidationMessage(&mut self, _message: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn CheckValidity(&self) -> bool {
+    fn CheckValidity(&self) -> bool {
         true
     }
 
-    pub fn SetCustomValidity(&mut self, _error: DOMString) {
+    fn SetCustomValidity(&mut self, _error: DOMString) {
     }
 }

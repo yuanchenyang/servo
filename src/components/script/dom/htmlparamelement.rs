@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::codegen::HTMLParamElementBinding;
+use dom::bindings::codegen::BindingDeclarations::HTMLParamElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLParamElementDerived;
-use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::js::{JSRef, Temporary};
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLParamElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -15,61 +15,69 @@ use servo_util::str::DOMString;
 
 #[deriving(Encodable)]
 pub struct HTMLParamElement {
-    htmlelement: HTMLElement
+    pub htmlelement: HTMLElement
 }
 
 impl HTMLParamElementDerived for EventTarget {
     fn is_htmlparamelement(&self) -> bool {
-        match self.type_id {
-            NodeTargetTypeId(ElementNodeTypeId(HTMLParamElementTypeId)) => true,
-            _ => false
-        }
+        self.type_id == NodeTargetTypeId(ElementNodeTypeId(HTMLParamElementTypeId))
     }
 }
 
 impl HTMLParamElement {
-    pub fn new_inherited(localName: DOMString, document: JS<Document>) -> HTMLParamElement {
+    pub fn new_inherited(localName: DOMString, document: &JSRef<Document>) -> HTMLParamElement {
         HTMLParamElement {
             htmlelement: HTMLElement::new_inherited(HTMLParamElementTypeId, localName, document)
         }
     }
 
-    pub fn new(localName: DOMString, document: &JS<Document>) -> JS<HTMLParamElement> {
-        let element = HTMLParamElement::new_inherited(localName, document.clone());
-        Node::reflect_node(~element, document, HTMLParamElementBinding::Wrap)
+    pub fn new(localName: DOMString, document: &JSRef<Document>) -> Temporary<HTMLParamElement> {
+        let element = HTMLParamElement::new_inherited(localName, document);
+        Node::reflect_node(box element, document, HTMLParamElementBinding::Wrap)
     }
 }
 
-impl HTMLParamElement {
-    pub fn Name(&self) -> DOMString {
-        ~""
+pub trait HTMLParamElementMethods {
+    fn Name(&self) -> DOMString;
+    fn SetName(&mut self, _name: DOMString) -> ErrorResult;
+    fn Value(&self) -> DOMString;
+    fn SetValue(&mut self, _value: DOMString) -> ErrorResult;
+    fn Type(&self) -> DOMString;
+    fn SetType(&mut self, _type: DOMString) -> ErrorResult;
+    fn ValueType(&self) -> DOMString;
+    fn SetValueType(&mut self, _value_type: DOMString) -> ErrorResult;
+}
+
+impl<'a> HTMLParamElementMethods for JSRef<'a, HTMLParamElement> {
+    fn Name(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetName(&mut self, _name: DOMString) -> ErrorResult {
+    fn SetName(&mut self, _name: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Value(&self) -> DOMString {
-        ~""
+    fn Value(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetValue(&mut self, _value: DOMString) -> ErrorResult {
+    fn SetValue(&mut self, _value: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn Type(&self) -> DOMString {
-        ~""
+    fn Type(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetType(&mut self, _type: DOMString) -> ErrorResult {
+    fn SetType(&mut self, _type: DOMString) -> ErrorResult {
         Ok(())
     }
 
-    pub fn ValueType(&self) -> DOMString {
-        ~""
+    fn ValueType(&self) -> DOMString {
+        "".to_owned()
     }
 
-    pub fn SetValueType(&mut self, _value_type: DOMString) -> ErrorResult {
+    fn SetValueType(&mut self, _value_type: DOMString) -> ErrorResult {
         Ok(())
     }
 }

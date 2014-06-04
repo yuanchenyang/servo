@@ -9,9 +9,9 @@ use platform::font::FontHandle;
 use platform::font_context::FontContextHandle;
 
 use azure::azure_hl::BackendType;
+use collections::hashmap::HashMap;
 use servo_util::cache::{Cache, LRUCache};
 use servo_util::time::ProfilerChan;
-use std::hashmap::HashMap;
 
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -20,13 +20,13 @@ use std::cell::RefCell;
 #[deriving(Clone)]
 pub struct FontContextInfo {
     /// The painting backend we're using.
-    backend: BackendType,
+    pub backend: BackendType,
 
     /// Whether we need a font list.
-    needs_font_list: bool,
+    pub needs_font_list: bool,
 
     /// A channel up to the profiler.
-    profiler_chan: ProfilerChan,
+    pub profiler_chan: ProfilerChan,
 }
 
 pub trait FontContextHandleMethods {
@@ -34,13 +34,13 @@ pub trait FontContextHandleMethods {
 }
 
 pub struct FontContext {
-    instance_cache: LRUCache<FontDescriptor, Rc<RefCell<Font>>>,
-    font_list: Option<FontList>, // only needed by layout
-    group_cache: LRUCache<SpecifiedFontStyle, Rc<RefCell<FontGroup>>>,
-    handle: FontContextHandle,
-    backend: BackendType,
-    generic_fonts: HashMap<~str,~str>,
-    profiler_chan: ProfilerChan,
+    pub instance_cache: LRUCache<FontDescriptor, Rc<RefCell<Font>>>,
+    pub font_list: Option<FontList>, // only needed by layout
+    pub group_cache: LRUCache<SpecifiedFontStyle, Rc<RefCell<FontGroup>>>,
+    pub handle: FontContextHandle,
+    pub backend: BackendType,
+    pub generic_fonts: HashMap<~str,~str>,
+    pub profiler_chan: ProfilerChan,
 }
 
 impl FontContext {
@@ -54,11 +54,11 @@ impl FontContext {
 
         // TODO: Allow users to specify these.
         let mut generic_fonts = HashMap::with_capacity(5);
-        generic_fonts.insert(~"serif", ~"Times New Roman");
-        generic_fonts.insert(~"sans-serif", ~"Arial");
-        generic_fonts.insert(~"cursive", ~"Apple Chancery");
-        generic_fonts.insert(~"fantasy", ~"Papyrus");
-        generic_fonts.insert(~"monospace", ~"Menlo");
+        generic_fonts.insert("serif".to_owned(), "Times New Roman".to_owned());
+        generic_fonts.insert("sans-serif".to_owned(), "Arial".to_owned());
+        generic_fonts.insert("cursive".to_owned(), "Apple Chancery".to_owned());
+        generic_fonts.insert("fantasy".to_owned(), "Papyrus".to_owned());
+        generic_fonts.insert("monospace".to_owned(), "Menlo".to_owned());
 
         FontContext {
             instance_cache: LRUCache::new(10),
@@ -116,7 +116,7 @@ impl FontContext {
     }
 
     fn create_font_group(&mut self, style: &SpecifiedFontStyle) -> Rc<RefCell<FontGroup>> {
-        let mut fonts = ~[];
+        let mut fonts = vec!();
 
         debug!("(create font group) --- starting ---");
 
@@ -148,7 +148,7 @@ impl FontContext {
                 Some(ref result) => {
                     found = true;
                     let instance = self.get_font_by_descriptor(result);
-                    instance.map(|font| fonts.push(font.clone()));
+                    let _ = instance.map(|font| fonts.push(font.clone()));
                 },
                 _ => {}
             }
@@ -186,23 +186,21 @@ impl FontContext {
                 match font_desc {
                     Some(ref fd) => {
                         let instance = self.get_font_by_descriptor(fd);
-                        instance.map(|font| fonts.push(font.clone()));
+                        let _ = instance.map(|font| fonts.push(font.clone()));
                     },
                     None => { }
                 };
             }
         }
-        assert!(fonts.len() > 0);
+        assert!(fonts.len() > 0, "No matching font(s), are the appropriate fonts installed?");
         // TODO(Issue #179): Split FontStyle into specified and used styles
         let used_style = (*style).clone();
 
         debug!("(create font group) --- finished ---");
 
-        unsafe {
-            Rc::new_unchecked(
-                RefCell::new(
-                    FontGroup::new(style.families.to_owned(), &used_style, fonts)))
-        }
+        Rc::new(
+            RefCell::new(
+                FontGroup::new(style.families.clone(), &used_style, fonts)))
     }
 
     fn create_font_instance(&self, desc: &FontDescriptor) -> Result<Rc<RefCell<Font>>, ()> {
@@ -213,7 +211,7 @@ impl FontContext {
                                                                             desc.style.clone());
                 result_handle.and_then(|handle| {
                     Ok(
-                        Rc::from_mut(
+                        Rc::new(
                             RefCell::new(
                                 Font::new_from_adopted_handle(self,
                                                               handle,

@@ -4,24 +4,24 @@
 
 use std::io;
 use std::io::Writer;
-use std::vec::raw::buf_as_slice;
 use std::cast::transmute;
 use std::mem::size_of;
+use std::slice::raw::buf_as_slice;
 
 fn hexdump_slice(buf: &[u8]) {
     let mut stderr = io::stderr();
-    stderr.write(bytes!("    "));
+    stderr.write(bytes!("    ")).unwrap();
     for (i, &v) in buf.iter().enumerate() {
         let output = format!("{:02X} ", v as uint);
-        stderr.write(output.as_bytes());
+        stderr.write(output.as_bytes()).unwrap();
         match i % 16 {
-            15 => stderr.write(bytes!("\n    ")),
-             7 => stderr.write(bytes!("   ")),
+            15 => { stderr.write(bytes!("\n    ")).unwrap(); },
+            7 =>  { stderr.write(bytes!("   ")).unwrap(); },
              _ => ()
         }
-        stderr.flush();
+        stderr.flush().unwrap();
     }
-    stderr.write(bytes!("\n"));
+    stderr.write(bytes!("\n")).unwrap();
 }
 
 pub fn hexdump<T>(obj: &T) {

@@ -6,7 +6,6 @@ use compositing::*;
 
 use geom::size::Size2D;
 use servo_msg::constellation_msg::{ConstellationChan, ExitMsg, ResizedWindowMsg};
-use std::comm::Port;
 use servo_util::time::ProfilerChan;
 use servo_util::time;
 
@@ -16,28 +15,36 @@ use servo_util::time;
 /// It's intended for headless testing.
 pub struct NullCompositor {
     /// The port on which we receive messages.
-    port: Port<Msg>,
+    pub port: Receiver<Msg>,
 }
 
 impl NullCompositor {
-    fn new(port: Port<Msg>) -> NullCompositor {
+    fn new(port: Receiver<Msg>) -> NullCompositor {
         NullCompositor {
             port: port,
         }
     }
 
-    pub fn create(port: Port<Msg>,
+    pub fn create(port: Receiver<Msg>,
                   constellation_chan: ConstellationChan,
                   profiler_chan: ProfilerChan) {
         let compositor = NullCompositor::new(port);
 
         // Tell the constellation about the initial fake size.
-        constellation_chan.send(ResizedWindowMsg(Size2D(640u, 480u)));
+        {
+            let ConstellationChan(ref chan) = constellation_chan;
+            chan.send(ResizedWindowMsg(Size2D(640u, 480u)));
+        }
         compositor.handle_message(constellation_chan);
 
         // Drain compositor port, sometimes messages contain channels that are blocking
         // another task from finishing (i.e. SetIds)
-        while compositor.port.try_recv().is_some() {}
+        loop {
+            match compositor.port.try_recv() {
+                Err(_) => break,
+                Ok(_) => {},
+            }
+        }
 
         profiler_chan.send(time::ExitMsg);
     }
@@ -47,7 +54,8 @@ impl NullCompositor {
             match self.port.recv() {
                 Exit(chan) => {
                     debug!("shutting down the constellation");
-                    constellation_chan.send(ExitMsg);
+                    let ConstellationChan(ref con_chan) = constellation_chan;
+                    con_chan.send(ExitMsg);
                     chan.send(());
                 }
 
@@ -68,10 +76,11 @@ impl NullCompositor {
                 // we'll notice and think about whether it needs a response, like
                 // SetIds.
 
-                NewLayer(..) | SetLayerPageSize(..) | SetLayerClipRect(..) | DeleteLayer(..) |
-                Paint(..) | InvalidateRect(..) | ChangeReadyState(..) | ChangeRenderState(..)|
-                ScrollFragmentPoint(..) | SetUnRenderedColor(..) | LoadComplete(..)
-                    => ()
+                CreateRootCompositorLayerIfNecessary(..) |
+                CreateDescendantCompositorLayerIfNecessary(..) | SetLayerPageSize(..) |
+                SetLayerClipRect(..) | DeleteLayerGroup(..) | Paint(..) |
+                ChangeReadyState(..) | ChangeRenderState(..) | ScrollFragmentPoint(..) |
+                SetUnRenderedColor(..) | LoadComplete(..) => ()
             }
         }
     }

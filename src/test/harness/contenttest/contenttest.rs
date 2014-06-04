@@ -7,11 +7,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern mod std;
-extern mod extra;
+extern crate std;
+extern crate getopts;
+extern crate test;
 
-use extra::test::{TestOpts, run_tests_console, TestDesc, TestDescAndFn, DynTestFn, DynTestName};
-use extra::getopts::{getopts, reqopt};
+use test::{TestOpts, run_tests_console, TestDesc, TestDescAndFn, DynTestFn, DynTestName};
+use getopts::{getopts, reqopt};
 use std::{os, str};
 use std::io::fs;
 use std::io::Reader;
@@ -25,18 +26,20 @@ struct Config {
 
 fn main() {
     let args = os::args();
-    let config = parse_config(args);
+    let config = parse_config(args.move_iter().collect());
     let opts = test_options(config.clone());
     let tests = find_tests(config);
-    if !run_tests_console(&opts, tests) {
-        os::set_exit_status(1);
+    match run_tests_console(&opts, tests) {
+        Ok(false) => os::set_exit_status(1), // tests failed
+        Err(_) => os::set_exit_status(2),    // I/O-related failure
+        _ => (),
     }
 }
 
-fn parse_config(args: ~[~str]) -> Config {
+fn parse_config(args: Vec<~str>) -> Config {
     let args = args.tail();
-    let opts = ~[reqopt("source-dir")];
-    let matches = match getopts(args, opts) {
+    let opts = vec!(reqopt("s", "source-dir", "source-dir", "source-dir"));
+    let matches = match getopts(args, opts.as_slice()) {
       Ok(m) => m,
       Err(f) => fail!(f.to_err_msg())
     };
@@ -46,7 +49,7 @@ fn parse_config(args: ~[~str]) -> Config {
         filter: if matches.free.is_empty() {
             None
         } else {
-            Some((*matches.free.head()).clone())
+            Some(matches.free.as_slice().head().unwrap().clone())
         }
     }
 }
@@ -61,14 +64,19 @@ fn test_options(config: Config) -> TestOpts {
         ratchet_noise_percent: None,
         save_metrics: None,
         test_shard: None,
-        logfile: None
+        logfile: None,
+        nocapture: false
     }
 }
 
-fn find_tests(config: Config) -> ~[TestDescAndFn] {
-    let mut files = fs::readdir(&Path::new(config.source_dir));
+fn find_tests(config: Config) -> Vec<TestDescAndFn> {
+    let files_res = fs::readdir(&Path::new(config.source_dir));
+    let mut files = match files_res {
+        Ok(files) => files,
+        _ => fail!("Error reading directory."),
+    };
     files.retain(|file| file.extension_str() == Some("html") );
-    return files.map(|file| make_test(file.display().to_str()) );
+    return files.iter().map(|file| make_test(file.display().to_str()) ).collect();
 }
 
 fn make_test(file: ~str) -> TestDescAndFn {
@@ -85,33 +93,36 @@ fn make_test(file: ~str) -> TestDescAndFn {
 fn run_test(file: ~str) {
     let path = os::make_absolute(&Path::new(file));
     // FIXME (#1094): not the right way to transform a path
-    let infile = ~"file://" + path.display().to_str();
-    let stdout = CreatePipe(true, false); // rustc #10228
+    let infile = "file://".to_owned() + path.display().to_str();
+    let stdout = CreatePipe(false, true);
     let stderr = InheritFd(2);
 
     let config = ProcessConfig {
         program: "./servo",
-        args: [~"-z", ~"-f", infile.clone()],
-        env: None,
-        cwd: None,
-        io: [Ignored, stdout, stderr]
+        args: &["-z".to_owned(), "-f".to_owned(), infile.clone()],
+        stdin: Ignored,
+        stdout: stdout,
+        stderr: stderr,
+        .. ProcessConfig::new()
     };
-
-    let mut prc = Process::new(config).unwrap();
-    let mut output = ~[];
+    let mut prc = match Process::configure(config) {
+        Ok(p) => p,
+        _ => fail!("Unable to configure process."),
+    };
+    let mut output = Vec::new();
     loop {
-        let byte = prc.io[1].get_mut_ref().read_byte();
+        let byte = prc.stdout.get_mut_ref().read_byte();
         match byte {
-            Some(byte) => {
+            Ok(byte) => {
                 print!("{}", byte as char);
                 output.push(byte);
             }
-            None => break
+            _ => break
         }
     }
 
-    let out = str::from_utf8(output);
-    let lines: ~[&str] = out.split('\n').collect();
+    let out = str::from_utf8(output.as_slice());
+    let lines: Vec<&str> = out.unwrap().split('\n').collect();
     for &line in lines.iter() {
         if line.contains("TEST-UNEXPECTED-FAIL") {
             fail!(line.to_owned());

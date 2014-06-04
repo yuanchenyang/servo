@@ -3,42 +3,50 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use dom::attr::Attr;
-use dom::bindings::codegen::AttrListBinding;
-use dom::bindings::js::JS;
+use dom::bindings::codegen::BindingDeclarations::AttrListBinding;
+use dom::bindings::js::{JS, JSRef, Temporary};
 use dom::bindings::utils::{Reflectable, Reflector, reflect_dom_object};
 use dom::element::Element;
 use dom::window::Window;
 
 #[deriving(Encodable)]
 pub struct AttrList {
-    reflector_: Reflector,
-    window: JS<Window>,
-    owner: JS<Element>,
+    pub reflector_: Reflector,
+    pub window: JS<Window>,
+    pub owner: JS<Element>,
 }
 
 impl AttrList {
-    pub fn new_inherited(window: JS<Window>, elem: JS<Element>) -> AttrList {
+    pub fn new_inherited(window: &JSRef<Window>, elem: &JSRef<Element>) -> AttrList {
         AttrList {
             reflector_: Reflector::new(),
-            window: window,
-            owner: elem
+            window: window.unrooted(),
+            owner: elem.unrooted(),
         }
     }
 
-    pub fn new(window: &JS<Window>, elem: &JS<Element>) -> JS<AttrList> {
-        reflect_dom_object(~AttrList::new_inherited(window.clone(), elem.clone()),
-                           window.get(), AttrListBinding::Wrap)
+    pub fn new(window: &JSRef<Window>, elem: &JSRef<Element>) -> Temporary<AttrList> {
+        reflect_dom_object(box AttrList::new_inherited(window, elem),
+                           window, AttrListBinding::Wrap)
+    }
+}
+
+pub trait AttrListMethods {
+    fn Length(&self) -> u32;
+    fn Item(&self, index: u32) -> Option<Temporary<Attr>>;
+    fn IndexedGetter(&self, index: u32, found: &mut bool) -> Option<Temporary<Attr>>;
+}
+
+impl<'a> AttrListMethods for JSRef<'a, AttrList> {
+    fn Length(&self) -> u32 {
+        self.owner.root().attrs.len() as u32
     }
 
-    pub fn Length(&self) -> u32 {
-        self.owner.get().attrs.len() as u32
+    fn Item(&self, index: u32) -> Option<Temporary<Attr>> {
+        self.owner.root().attrs.as_slice().get(index as uint).map(|x| Temporary::new(x.clone()))
     }
 
-    pub fn Item(&self, index: u32) -> Option<JS<Attr>> {
-        self.owner.get().attrs.get_opt(index as uint).map(|x| x.clone())
-    }
-
-    pub fn IndexedGetter(&self, index: u32, found: &mut bool) -> Option<JS<Attr>> {
+    fn IndexedGetter(&self, index: u32, found: &mut bool) -> Option<Temporary<Attr>> {
         let item = self.Item(index);
         *found = item.is_some();
         item

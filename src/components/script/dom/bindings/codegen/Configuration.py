@@ -57,17 +57,13 @@ class Configuration:
             if key == 'webIDLFile':
                 getter = lambda x: x.interface.filename()
             elif key == 'hasInterfaceObject':
-                getter = lambda x: (not x.interface.isExternal() and
-                                    x.interface.hasInterfaceObject())
+                getter = lambda x: x.interface.hasInterfaceObject()
             elif key == 'hasInterfacePrototypeObject':
-                getter = lambda x: (not x.interface.isExternal() and
-                                    x.interface.hasInterfacePrototypeObject())
+                getter = lambda x: x.interface.hasInterfacePrototypeObject()
             elif key == 'hasInterfaceOrInterfacePrototypeObject':
                 getter = lambda x: x.hasInterfaceOrInterfacePrototypeObject()
             elif key == 'isCallback':
                 getter = lambda x: x.interface.isCallback()
-            elif key == 'isExternal':
-                getter = lambda x: x.interface.isExternal()
             elif key == 'isJSImplemented':
                 getter = lambda x: x.interface.isJSImplemented()
             else:
@@ -80,7 +76,11 @@ class Configuration:
     @staticmethod
     def _filterForFile(items, webIDLFile=""):
         """Gets the items that match the given filters."""
+        if not webIDLFile:
+            return items
+
         return filter(lambda x: x.filename() == webIDLFile, items)
+
     def getDictionaries(self, webIDLFile=""):
         return self._filterForFile(self.dictionaries, webIDLFile=webIDLFile)
     def getCallbacks(self, webIDLFile=""):
@@ -132,29 +132,26 @@ class Descriptor(DescriptorProvider):
 
         # Read the desc, and fill in the relevant defaults.
         ifaceName = self.interface.identifier.name
-        if self.interface.isExternal() or self.interface.isCallback():
-            nativeTypeDefault = "nsIDOM" + ifaceName
-        else:
-            nativeTypeDefault = 'JS<%s>' % ifaceName
 
-        self.nativeType = desc.get('nativeType', nativeTypeDefault)
+        # Callback types do not use JS smart pointers, so we should not use the
+        # built-in rooting mechanisms for them.
+        if self.interface.isCallback():
+            self.needsRooting = False
+        else:
+            self.needsRooting = True
+
+        self.returnType = "Temporary<%s>" % ifaceName
+        self.argumentType = "JSRef<%s>" % ifaceName
+        self.memberType = "Root<'a, 'b, %s>" % ifaceName
+        self.nativeType = desc.get('nativeType', 'JS<%s>' % ifaceName)
         self.concreteType = desc.get('concreteType', ifaceName)
-        self.needsAbstract = desc.get('needsAbstract', [])
         self.createGlobal = desc.get('createGlobal', False)
-
-        if self.interface.isCallback() or self.interface.isExternal():
-            if 'castable' in desc:
-                raise TypeError("%s is external or callback but has a castable "
-                                "setting" % self.interface.identifier.name)
-            self.castable = False
-        else:
-            self.castable = desc.get('castable', True)
-
         self.register = desc.get('register', True)
+        self.outerObjectHook = desc.get('outerObjectHook', 'None')
 
         # If we're concrete, we need to crawl our ancestor interfaces and mark
         # them as having a concrete descendant.
-        self.concrete = desc.get('concrete', not self.interface.isExternal())
+        self.concrete = desc.get('concrete', True)
         if self.concrete:
             self.proxy = False
             operations = {
@@ -248,13 +245,6 @@ class Descriptor(DescriptorProvider):
                                          len(self.prototypeChain))
 
     def hasInterfaceOrInterfacePrototypeObject(self):
-
-        # Forward-declared interfaces don't need either interface object or
-        # interface prototype object as they're going to use QI (on main thread)
-        # or be passed as a JSObject (on worker threads).
-        if self.interface.isExternal():
-            return False
-
         return self.interface.hasInterfaceObject() or self.interface.hasInterfacePrototypeObject()
 
     def getExtendedAttributes(self, member, getter=False, setter=False):
@@ -283,3 +273,54 @@ class Descriptor(DescriptorProvider):
             throws = member.getExtendedAttribute(throwsAttr)
         maybeAppendInfallibleToAttrs(attrs, throws)
         return attrs
+
+# Some utility methods
+def getTypesFromDescriptor(descriptor):
+    """
+    Get all argument and return types for all members of the descriptor
+    """
+    members = [m for m in descriptor.interface.members]
+    if descriptor.interface.ctor():
+        members.append(descriptor.interface.ctor())
+    members.extend(descriptor.interface.namedConstructors)
+    signatures = [s for m in members if m.isMethod() for s in m.signatures()]
+    types = []
+    for s in signatures:
+        assert len(s) == 2
+        (returnType, arguments) = s
+        types.append(returnType)
+        types.extend(a.type for a in arguments)
+
+    types.extend(a.type for a in members if a.isAttr())
+    return types
+
+def getFlatTypes(types):
+    retval = set()
+    for type in types:
+        type = type.unroll()
+        if type.isUnion():
+            retval |= set(type.flatMemberTypes)
+        else:
+            retval.add(type)
+    return retval
+
+def getTypesFromDictionary(dictionary):
+    """
+    Get all member types for this dictionary
+    """
+    types = []
+    curDict = dictionary
+    while curDict:
+        types.extend([m.type for m in curDict.members])
+        curDict = curDict.parent
+    return types
+
+def getTypesFromCallback(callback):
+    """
+    Get the types this callback depends on: its return type and the
+    types of its arguments.
+    """
+    sig = callback.signatures()[0]
+    types = [sig[0]] # Return type
+    types.extend(arg.type for arg in sig[1]) # Arguments
+    return types
