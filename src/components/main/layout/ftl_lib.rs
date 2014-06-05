@@ -3,7 +3,9 @@ use std::mem;
 use layout;
 use layout::model::MaybeAuto::;
 use layout::fragment::Fragment;
-use layout::flow::{Flow, BlockFlowClass,InlineFlowClass};
+use layout::flow::{Flow, BlockFlowClass,InlineFlowClass,TableWrapperFlowClass,
+                   TableFlowClass,TableColGroupFlowClass,TableRowGroupFlowClass,
+                   TableRowFlowClass,TableCaptionFlowClass,TableCellFlowClass};
 use layout::util::ToGfxColor;
 
 use geom::approxeq::ApproxEq;
@@ -161,8 +163,14 @@ pub fn log(logstr: &str){
 
 pub fn as_ftl_node<'a>(flow: &'a mut Flow) -> &'a mut layout::ftl_layout::FtlNode {
     match flow.class() {
-        BlockFlowClass => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
-        InlineFlowClass => flow.as_inline() as &'a mut layout::ftl_layout::FtlNode,
-        _ => fail!("Tables not supported yet!")
+        BlockFlowClass         => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
+        InlineFlowClass        => flow.as_inline() as &'a mut layout::ftl_layout::FtlNode,
+        TableColGroupFlowClass => flow.as_table_colgroup() as &'a mut layout::ftl_layout::FtlNode,
+        TableWrapperFlowClass  => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
+        TableFlowClass         => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
+        TableRowGroupFlowClass => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
+        TableRowFlowClass      => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
+        TableCaptionFlowClass  => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
+        TableCellFlowClass     => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
     }
 }

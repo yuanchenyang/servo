@@ -715,6 +715,7 @@ impl LayoutTask {
             background_color: color,
             scroll_policy: Scrollable,
         };
+
         /*
         // Build the display list if necessary, and send it to the renderer.
         if data.goal == ReflowForDisplay {
