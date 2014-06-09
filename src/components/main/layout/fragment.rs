@@ -16,6 +16,7 @@ use layout::model;
 use layout::text;
 use layout::util::{OpaqueNodeMethods, ToGfxColor};
 use layout::wrapper::{TLayoutNode, ThreadSafeLayoutNode};
+use layout::ftl_layout::InlineBoxFtlAttrs;
 
 use geom::{Point2D, Rect, Size2D, SideOffsets2D};
 use geom::approxeq::ApproxEq;
@@ -92,6 +93,8 @@ pub struct Fragment {
 
     /// Info specific to the kind of fragment. Keep this enum small.
     pub specific: SpecificFragmentInfo,
+
+    pub ftl_attrs: InlineBoxFtlAttrs,
 
     /// New-line chracter(\n)'s positions(relative, not absolute)
     ///
