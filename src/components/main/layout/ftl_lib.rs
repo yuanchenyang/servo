@@ -1,8 +1,11 @@
 use std::cast;
 use std::mem;
+use std::vec::MoveItems;
 use layout;
 use layout::model::MaybeAuto::;
-use layout::fragment::Fragment;
+use layout::fragment::{Fragment, SplitInfo, ScannedTextFragmentInfo,ScannedTextFragment};
+use layout::inline::InlineFragments;
+use collections::{Deque, RingBuf};
 use layout::flow::{Flow, BlockFlowClass,InlineFlowClass,TableWrapperFlowClass,
                    TableFlowClass,TableColGroupFlowClass,TableRowGroupFlowClass,
                    TableRowFlowClass,TableCaptionFlowClass,TableCellFlowClass};
@@ -11,6 +14,7 @@ use layout::util::ToGfxColor;
 use geom::approxeq::ApproxEq;
 
 use servo_util::geometry::Au;
+use gfx::text::glyph::CharIndex;
 use geom::{Point2D, Rect, Size2D, SideOffsets2D};
 use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto};
 use gfx::display_list::{DisplayList, BaseDisplayItem,
@@ -172,5 +176,96 @@ pub fn as_ftl_node<'a>(flow: &'a mut Flow) -> &'a mut layout::ftl_layout::FtlNod
         TableRowFlowClass      => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
         TableCaptionFlowClass  => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
         TableCellFlowClass     => flow.as_block() as &'a mut layout::ftl_layout::FtlNode,
+    }
+}
+
+struct Spliterator {
+    items: MoveItems<Fragment>,
+    leftover: Vec<Fragment>,
+    work_list: RingBuf<Fragment>,
+}
+
+pub trait Splittable {
+    fn fragments_split_iter(&mut self) -> Spliterator;
+    fn end_iter(&mut self, iter: Spliterator);
+    
+}
+
+impl Splittable for InlineFragments {
+    fn fragments_split_iter(&mut self) -> Spliterator {
+        Spliterator {
+            items: mem::replace(&mut self.fragments, Vec::new()).move_iter(),
+            leftover: Vec::new(),
+            work_list: RingBuf::new()
+        }
+    }
+
+    fn end_iter(&mut self, iter: Spliterator) {
+        mem::replace(&mut self.fragments, iter.leftover);
+    }
+}
+
+impl Spliterator {
+    pub fn split_to_width(&mut self, remaining_width: Au, starts_line: bool) -> Option<&mut Fragment> {
+        let cur_fragment = if self.work_list.is_empty() {
+            match self.items.next() {
+                None => {return None;},
+                Some(fragment) => {
+                    fragment
+                }
+            }
+        } else {
+            let fragment = self.work_list.pop_front().unwrap();
+            fragment
+        };
+
+        let split = cur_fragment.find_split_info_for_width(CharIndex(0), remaining_width, starts_line);
+
+        let ret = match split.map(|(left, right, run)| {
+            let split_fragment = |split: SplitInfo| {
+                let info = ScannedTextFragmentInfo::new(run.clone(), split.range);
+                let specific = ScannedTextFragment(info);
+                let size = Size2D(split.width, cur_fragment.border_box.size.height);
+                cur_fragment.transform(size, specific)
+            };
+
+            (left.map(|x| { debug!("LineBreaker: Left split {}", x); split_fragment(x) }),
+             right.map(|x| { debug!("LineBreaker: Right split {}", x); split_fragment(x) }))
+        }) {
+            None => Some(cur_fragment),
+            Some((left,right)) => {
+                match right {
+                    None => {},
+                    Some(frag) => { self.work_list.push_front(frag); }
+                }
+                left
+            }
+        };
+
+        match ret {
+            None => self.split_to_width(remaining_width, starts_line),
+            Some(x) => {
+                self.leftover.push(x);
+                unsafe { Some(cast::transmute_mut_lifetime(self.leftover.mut_last().unwrap())) }
+            }
+        }
+    }
+}
+
+pub trait LineMetrics {
+    fn get_ascent(&mut self) -> Au;
+    fn get_descent(&mut self) -> Au;
+    fn get_lineheight(&mut self) -> Au;
+}
+
+impl LineMetrics for Fragment {
+    fn get_ascent(&mut self) -> Au {
+        Au(0)
+    }
+    fn get_descent(&mut self) -> Au {
+        Au(0)
+    }
+    fn get_lineheight(&mut self) -> Au {
+        Au(0)
     }
 }

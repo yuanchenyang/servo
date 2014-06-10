@@ -16,7 +16,7 @@ use layout::model;
 use layout::text;
 use layout::util::{OpaqueNodeMethods, ToGfxColor};
 use layout::wrapper::{TLayoutNode, ThreadSafeLayoutNode};
-use layout::ftl_layout::InlineBoxFtlAttrs;
+use layout;
 
 use geom::{Point2D, Rect, Size2D, SideOffsets2D};
 use geom::approxeq::ApproxEq;
@@ -94,7 +94,7 @@ pub struct Fragment {
     /// Info specific to the kind of fragment. Keep this enum small.
     pub specific: SpecificFragmentInfo,
 
-    pub ftl_attrs: InlineBoxFtlAttrs,
+    pub ftl_attrs: layout::ftl_layout::InlineBoxFtlAttrs,
 
     /// New-line chracter(\n)'s positions(relative, not absolute)
     ///
@@ -324,6 +324,7 @@ impl Fragment {
             border_box: Rect::zero(),
             border_padding: Zero::zero(),
             margin: Zero::zero(),
+            ftl_attrs: layout::ftl_layout::InlineBoxFtlAttrs::new(),
             specific: constructor.build_specific_fragment_info_for_node(node),
             new_line_pos: vec!(),
         }
@@ -338,6 +339,7 @@ impl Fragment {
             border_padding: Zero::zero(),
             margin: Zero::zero(),
             specific: specific,
+            ftl_attrs: layout::ftl_layout::InlineBoxFtlAttrs::new(),
             new_line_pos: vec!(),
         }
     }
@@ -361,6 +363,7 @@ impl Fragment {
             border_padding: Zero::zero(),
             margin: Zero::zero(),
             specific: specific,
+            ftl_attrs: layout::ftl_layout::InlineBoxFtlAttrs::new(),
             new_line_pos: vec!(),
         }
     }
@@ -377,6 +380,7 @@ impl Fragment {
             border_padding: Zero::zero(),
             margin: Zero::zero(),
             specific: specific,
+            ftl_attrs: layout::ftl_layout::InlineBoxFtlAttrs::new(),
             new_line_pos: vec!(),
         }
     }
@@ -399,6 +403,7 @@ impl Fragment {
             border_padding: self.border_padding,
             margin: self.margin,
             specific: specific,
+            ftl_attrs: layout::ftl_layout::InlineBoxFtlAttrs::new(),
             new_line_pos: self.new_line_pos.clone(),
         }
     }
