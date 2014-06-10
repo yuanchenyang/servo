@@ -55,19 +55,19 @@ pub fn base<'a,I>(node: &'a mut layout::ftl_layout::FtlNode) -> &'a mut I {
     }
 }
 
-pub fn specOrZero(length: LengthOrPercentageOrAuto, containing: Au) -> Au {
+pub fn spec_or_zero(length: LengthOrPercentageOrAuto, containing: Au) -> Au {
     //for b in flowbox.iter() {
     MaybeAuto::from_style(length, containing).specified_or_zero()
     //}
     //Au(0)
 }
 
-pub fn makeRect(x: Au, y: Au, width: Au, height: Au) -> Rect<Au> {
+pub fn make_rect(x: Au, y: Au, width: Au, height: Au) -> Rect<Au> {
     Rect(Point2D(x, y),
          Size2D(width, height))
 }
 
-pub fn isAuto(length : LengthOrPercentageOrAuto) -> bool {
+pub fn is_auto(length : LengthOrPercentageOrAuto) -> bool {
     match length {
         LPA_Auto => true,
         _ => false
@@ -83,19 +83,19 @@ pub fn max (a : Au, b : Au) -> Au {
     }
 }
 
-pub fn newDisplayList() -> DisplayList {
+pub fn new_display_list() -> DisplayList {
     DisplayList::new()
 }
 
-pub fn mergeLists(parent: &mut DisplayList,
+pub fn merge_lists(parent: &mut DisplayList,
                   child:  &mut DisplayList) -> int {
     parent.push_all_move(mem::replace(child, DisplayList::new()));
     1
 }
 
-pub fn addBorder(list: &mut DisplayList, frag: &Fragment,
+pub fn add_border(list: DisplayList, frag: &Fragment,
                  x: Au, y: Au, width: Au, height: Au,
-                 t: Au, r: Au, b: Au, l: Au) -> int {
+                 t: Au, r: Au, b: Au, l: Au) -> DisplayList {
 
     let style = frag.style();
 
@@ -106,7 +106,7 @@ pub fn addBorder(list: &mut DisplayList, frag: &Fragment,
 
     let border = SideOffsets2D::new(t, r, b, l);
     let border_display_item = box BorderDisplayItem {
-        base: BaseDisplayItem::new(makeRect(x, y, width, height),
+        base: BaseDisplayItem::new(make_rect(x, y, width, height),
                                    frag.node,
                                    BackgroundAndBordersStackingLevel),
         border: border,
@@ -119,31 +119,33 @@ pub fn addBorder(list: &mut DisplayList, frag: &Fragment,
                                       style.get_border().border_bottom_style,
                                       style.get_border().border_left_style)
     };
+    let mut list = list;
     list.push(BorderDisplayItemClass(border_display_item));
-    1
+    list
 }
 
-pub fn addBackground(list: &mut DisplayList, frag: &Fragment,
-                     x: Au, y: Au, width: Au, height: Au) -> int {
+pub fn add_background(list: DisplayList, frag: &Fragment,
+                     x: Au, y: Au, width: Au, height: Au) -> DisplayList {
     let style = frag.style();
     let background_color = style.resolve_color(style.get_background().background_color);
+    let mut list = list;
     if !background_color.alpha.approx_eq(&0.0) {
         let solid_color_display_item = box SolidColorDisplayItem {
-            base: BaseDisplayItem::new(makeRect(x, y, width, height),
+            base: BaseDisplayItem::new(make_rect(x, y, width, height),
                                        frag.node,
                                        BackgroundAndBordersStackingLevel),
             color: background_color.to_gfx_color(),
         };
         list.push(SolidColorDisplayItemClass(solid_color_display_item));
     }
-    1
+    list
 }
 
-pub fn rectHeight(rect: Rect<Au>) -> Au {
+pub fn rect_height(rect: Rect<Au>) -> Au {
     rect.size.height
 }
 
-pub fn rectWidth(rect: Rect<Au>) -> Au {
+pub fn rect_width(rect: Rect<Au>) -> Au {
     rect.size.width
 }
 
@@ -188,7 +190,7 @@ struct Spliterator {
 pub trait Splittable {
     fn fragments_split_iter(&mut self) -> Spliterator;
     fn end_iter(&mut self, iter: Spliterator);
-    
+
 }
 
 impl Splittable for InlineFragments {

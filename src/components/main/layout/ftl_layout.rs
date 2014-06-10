@@ -4,13 +4,11 @@ use layout::block::BlockFlow;
 use layout::inline::InlineFlow;
 use layout::table_colgroup::TableColGroupFlow;
 use layout::flow::{mut_base,BaseFlow};
-use layout::flow_list::{FlowList};
 use layout::fragment::Fragment;
 use layout::model::{specified};
 use style::computed_values::{LengthOrPercentageOrAuto,LengthOrPercentage};
 use servo_util::geometry::Au;
 use gfx::display_list::{DisplayList};
-use std::mem;
 
 pub trait FtlNode {
   fn with_all_children(&mut self, func: |&mut FtlNode|);
@@ -28,7 +26,6 @@ pub struct BaseFlowFtlAttrs {
   pub flowheight: Au,
   pub availablewidth: Au,
   pub display_list: DisplayList,
-  pub render: int,
   pub flowwidth: Au,
   pub containingx: Au,
   pub containingy: Au,
@@ -50,7 +47,6 @@ impl BaseFlowFtlAttrs {
       flowheight: Au::new(0),
       availablewidth: Au::new(0),
       display_list: DisplayList::new(),
-      render: 0,
       flowwidth: Au::new(0),
       containingx: Au::new(0),
       containingy: Au::new(0),
@@ -63,6 +59,7 @@ impl BaseFlowFtlAttrs {
   }
 }
 
+#[deriving(Clone)]
 pub struct InlineBoxFtlAttrs {
   pub baselinefinal: Au,
   pub lineposy: Au,
@@ -142,116 +139,81 @@ impl BlockFlowFtlAttrs {
 }
 
 //@type action
-fn tablecolgroupflow_flowX () -> Au { Au(0) }
+fn blockflow_mr ( _ale_arg3: Au,  _ale_arg2: LengthOrPercentageOrAuto,  _ale_arg1: LengthOrPercentageOrAuto,  _ale_arg7: Au,  _ale_arg0: LengthOrPercentageOrAuto,  _ale_arg5: Au,  _ale_arg8: Au,  _ale_arg6: Au,  _ale_arg4: Au) -> Au { if ((((! is_auto(_ale_arg0)) && ((is_auto(_ale_arg1) || is_auto(_ale_arg2)))))) { spec_or_zero(_ale_arg0, _ale_arg3) } else { (if (is_auto(_ale_arg1)) { Au(0) } else { (if (is_auto(_ale_arg2)) { (_ale_arg3 - _ale_arg4 - _ale_arg5 - _ale_arg6 - _ale_arg7 - _ale_arg8) / Au(2) } else { (_ale_arg3 - _ale_arg4 - _ale_arg5 - _ale_arg6 - _ale_arg7 - _ale_arg8 - spec_or_zero(_ale_arg2, _ale_arg3)) }) }) } }
+//@type action
+fn blockflow_selfIntrinsHeight ( _ale_arg0: LengthOrPercentageOrAuto) -> Au { spec_or_zero(_ale_arg0, Au(0)) }
+//@type action
+fn blockflow_pt ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentage) -> Au { specified(_ale_arg0, _ale_arg1) }
+//@type action
+fn blockflow_bt ( _ale_arg0: Au) -> Au { _ale_arg0 }
+//@type action
+fn blockflow_flowWidth ( _ale_arg0: bool,  _ale_arg5: Au,  _ale_arg3: Au,  _ale_arg2: Au,  _ale_arg6: Au,  _ale_arg1: Au,  _ale_arg4: Au) -> Au { if (_ale_arg0) { _ale_arg1 } else { _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 + _ale_arg6 } }
+//@type action
+fn blockflow_ml ( _ale_arg3: Au,  _ale_arg1: LengthOrPercentageOrAuto,  _ale_arg0: LengthOrPercentageOrAuto,  _ale_arg6: Au,  _ale_arg2: LengthOrPercentageOrAuto,  _ale_arg5: Au,  _ale_arg8: Au,  _ale_arg7: Au,  _ale_arg4: Au) -> Au { if (is_auto(_ale_arg0)) { (if (is_auto(_ale_arg1)) { Au(0) } else { (if (is_auto(_ale_arg2)) { (_ale_arg3 - _ale_arg4 - _ale_arg5 - _ale_arg6 - _ale_arg7 - _ale_arg8) / Au(2) } else { (_ale_arg3 - _ale_arg4 - _ale_arg5 - _ale_arg6 - _ale_arg7 - _ale_arg8 - spec_or_zero(_ale_arg2, _ale_arg3)) }) }) } else { spec_or_zero(_ale_arg0, _ale_arg3) } }
+//@type action
+fn blockflow_mbpHoriz ( _ale_arg1: Au,  _ale_arg4: Au,  _ale_arg2: Au,  _ale_arg5: Au,  _ale_arg0: Au,  _ale_arg3: Au) -> Au { _ale_arg0 + _ale_arg1 + _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 }
+//@type action
+fn blockflow_mb ( _ale_arg0: LengthOrPercentageOrAuto,  _ale_arg1: Au) -> Au { if (is_auto(_ale_arg0)) { Au(0) } else { spec_or_zero(_ale_arg0, _ale_arg1) } }
+//@type action
+fn blockflow_pr ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentage) -> Au { specified(_ale_arg0, _ale_arg1) }
+//@type action
+fn blockflow_br ( _ale_arg0: Au) -> Au { _ale_arg0 }
+//@type action
+fn blockflow_flowX ( _ale_arg0: Au,  _ale_arg1: Au) -> Au { _ale_arg0 + _ale_arg1 }
+//@type action
+fn blockflow_pb ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentage) -> Au { specified(_ale_arg0, _ale_arg1) }
+//@type action
+fn blockflow_mt ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentageOrAuto) -> Au { if (is_auto(_ale_arg0)) { Au(0) } else { spec_or_zero(_ale_arg0, _ale_arg1) } }
+//@type action
+fn blockflow_mbpVert ( _ale_arg3: Au,  _ale_arg0: Au,  _ale_arg1: Au,  _ale_arg2: Au,  _ale_arg5: Au,  _ale_arg4: Au) -> Au { _ale_arg0 + _ale_arg1 + _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 }
+//@type action
+fn blockflow_totalHeight ( _ale_arg0: Au,  _ale_arg1: Au,  _ale_arg2: Au) -> Au { _ale_arg0 + _ale_arg1 + _ale_arg2 }
+//@type action
+fn blockflow_display_list ( _ale_arg6: Au,  _ale_arg5: Au,  _ale_arg10: Au,  _ale_arg4: Au,  _ale_arg3: Au,  _ale_arg1: Au,  _ale_arg9: Au,  _ale_arg8: Au,  _ale_arg2: Au,  _ale_arg0: &Fragment,  _ale_arg7: Au) -> DisplayList { add_border(add_background(new_display_list(), _ale_arg0, _ale_arg1 + _ale_arg2, _ale_arg3 + _ale_arg4, _ale_arg5, _ale_arg6), _ale_arg0, _ale_arg1 + _ale_arg2, _ale_arg3 + _ale_arg4, _ale_arg5, _ale_arg6, _ale_arg7, _ale_arg8, _ale_arg9, _ale_arg10) }
+//@type action
+fn blockflow_flowHeight ( _ale_arg2: Au,  _ale_arg1: Au,  _ale_arg3: Au,  _ale_arg0: Au,  _ale_arg4: Au,  _ale_arg5: Au) -> Au { if ((_ale_arg0 == Au(0))) { _ale_arg1 + _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 } else { _ale_arg0 + _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 } }
+//@type action
+fn blockflow_computedWidth ( _ale_arg0: bool,  _ale_arg3: Au,  _ale_arg2: LengthOrPercentageOrAuto,  _ale_arg4: Au,  _ale_arg5: Au,  _ale_arg1: Au) -> Au { if (_ale_arg0) { _ale_arg1 } else { (if (is_auto(_ale_arg2)) { _ale_arg3 - _ale_arg4 } else { _ale_arg5 }) } }
+//@type action
+fn blockflow_pl ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentage) -> Au { specified(_ale_arg0, _ale_arg1) }
+//@type action
+fn blockflow_bl ( _ale_arg0: Au) -> Au { _ale_arg0 }
+//@type action
+fn blockflow_flowY ( _ale_arg0: Au,  _ale_arg1: Au) -> Au { _ale_arg0 + _ale_arg1 }
+//@type action
+fn blockflow_totalWidth ( _ale_arg0: Au,  _ale_arg2: Au,  _ale_arg1: Au) -> Au { _ale_arg0 + _ale_arg1 + _ale_arg2 }
+//@type action
+fn blockflow_selfIntrinsWidth ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentageOrAuto) -> Au { spec_or_zero(_ale_arg0, _ale_arg1) }
+//@type action
+fn blockflow_bb ( _ale_arg0: Au) -> Au { _ale_arg0 }
+//@type action
+fn inlineflow_flowHeight () -> Au { Au(0) }
+//@type action
+fn inlineflow_flowY () -> Au { Au(0) }
+//@type action
+fn inlineflow_flowWidth () -> Au { Au(0) }
+//@type action
+fn inlineflow_totalHeight () -> Au { Au(0) }
+//@type action
+fn inlineflow_totalWidth () -> Au { Au(0) }
+//@type action
+fn inlineflow_flowX () -> Au { Au(0) }
 //@type action
 fn tablecolgroupflow_flowY () -> Au { Au(0) }
+//@type action
+fn tablecolgroupflow_flowX () -> Au { Au(0) }
+//@type action
+fn tablecolgroupflow_flowHeight () -> Au { Au(0) }
 //@type action
 fn tablecolgroupflow_totalHeight () -> Au { Au(0) }
 //@type action
 fn tablecolgroupflow_flowWidth () -> Au { Au(0) }
 //@type action
 fn tablecolgroupflow_totalWidth () -> Au { Au(0) }
-//@type action
-fn tablecolgroupflow_flowHeight () -> Au { Au(0) }
-//@type action
-fn inlineflow_totalWidth () -> Au { Au(0) }
-//@type action
-fn inlineflow_totalHeight () -> Au { Au(0) }
-//@type action
-fn inlineflow_flowX () -> Au { Au(0) }
-//@type action
-fn inlineflow_flowY () -> Au { Au(0) }
-//@type action
-fn inlineflow_flowWidth () -> Au { Au(0) }
-//@type action
-fn inlineflow_flowHeight () -> Au { Au(0) }
-//@type action
-fn blockflow_pt ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentage) -> Au { specified(_ale_arg0, _ale_arg1) }
-//@type action
-fn blockflow_bl ( _ale_arg0: Au) -> Au { _ale_arg0 }
-//@type action
-fn blockflow_br ( _ale_arg0: Au) -> Au { _ale_arg0 }
-//@type action
-fn blockflow_pr ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentage) -> Au { specified(_ale_arg0, _ale_arg1) }
-//@type action
-fn blockflow_flowX ( _ale_arg0: Au,  _ale_arg1: Au) -> Au { _ale_arg0 + _ale_arg1 }
-//@type action
-fn blockflow_pb ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentage) -> Au { specified(_ale_arg0, _ale_arg1) }
-//@type action
-fn blockflow_render ( _ale_arg7: Au,  _ale_arg6: Au,  _ale_arg11: Au,  _ale_arg5: Au,  _ale_arg4: Au,  _ale_arg2: Au,  _ale_arg10: Au,  _ale_arg9: Au,  _ale_arg3: Au,  _ale_arg1: &Fragment,  _ale_arg8: Au,  _ale_arg0: &mut DisplayList) -> int { addBackground(_ale_arg0, _ale_arg1, _ale_arg2 + _ale_arg3, _ale_arg4 + _ale_arg5, _ale_arg6, _ale_arg7) + addBorder(_ale_arg0, _ale_arg1, _ale_arg2 + _ale_arg3, _ale_arg4 + _ale_arg5, _ale_arg6, _ale_arg7, _ale_arg8, _ale_arg9, _ale_arg10, _ale_arg11) }
-//@type action
-fn blockflow_display_list () -> DisplayList { newDisplayList() }
-//@type action
-fn blockflow_totalHeight ( _ale_arg0: Au,  _ale_arg1: Au,  _ale_arg2: Au) -> Au { _ale_arg0 + _ale_arg1 + _ale_arg2 }
-//@type action
-fn blockflow_bb ( _ale_arg0: Au) -> Au { _ale_arg0 }
-//@type action
-fn blockflow_ml ( _ale_arg3: Au,  _ale_arg1: LengthOrPercentageOrAuto,  _ale_arg0: LengthOrPercentageOrAuto,  _ale_arg6: Au,  _ale_arg2: LengthOrPercentageOrAuto,  _ale_arg5: Au,  _ale_arg8: Au,  _ale_arg7: Au,  _ale_arg4: Au) -> Au { if (isAuto(_ale_arg0)) { (if (isAuto(_ale_arg1)) { Au(0) } else { (if (isAuto(_ale_arg2)) { (_ale_arg3 - _ale_arg4 - _ale_arg5 - _ale_arg6 - _ale_arg7 - _ale_arg8) / Au(2) } else { (_ale_arg3 - _ale_arg4 - _ale_arg5 - _ale_arg6 - _ale_arg7 - _ale_arg8 - specOrZero(_ale_arg2, _ale_arg3)) }) }) } else { specOrZero(_ale_arg0, _ale_arg3) } }
-//@type action
-fn blockflow_mb ( _ale_arg0: LengthOrPercentageOrAuto,  _ale_arg1: Au) -> Au { if (isAuto(_ale_arg0)) { Au(0) } else { specOrZero(_ale_arg0, _ale_arg1) } }
-//@type action
-fn blockflow_bt ( _ale_arg0: Au) -> Au { _ale_arg0 }
-//@type action
-fn blockflow_selfIntrinsWidth ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentageOrAuto) -> Au { specOrZero(_ale_arg0, _ale_arg1) }
-//@type action
-fn blockflow_flowWidth ( _ale_arg0: bool,  _ale_arg5: Au,  _ale_arg3: Au,  _ale_arg2: Au,  _ale_arg6: Au,  _ale_arg1: Au,  _ale_arg4: Au) -> Au { if (_ale_arg0) { _ale_arg1 } else { _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 + _ale_arg6 } }
-//@type action
-fn blockflow_mr ( _ale_arg3: Au,  _ale_arg2: LengthOrPercentageOrAuto,  _ale_arg1: LengthOrPercentageOrAuto,  _ale_arg7: Au,  _ale_arg0: LengthOrPercentageOrAuto,  _ale_arg5: Au,  _ale_arg8: Au,  _ale_arg6: Au,  _ale_arg4: Au) -> Au { if ((((! isAuto(_ale_arg0)) && ((isAuto(_ale_arg1) || isAuto(_ale_arg2)))))) { specOrZero(_ale_arg0, _ale_arg3) } else { (if (isAuto(_ale_arg1)) { Au(0) } else { (if (isAuto(_ale_arg2)) { (_ale_arg3 - _ale_arg4 - _ale_arg5 - _ale_arg6 - _ale_arg7 - _ale_arg8) / Au(2) } else { (_ale_arg3 - _ale_arg4 - _ale_arg5 - _ale_arg6 - _ale_arg7 - _ale_arg8 - specOrZero(_ale_arg2, _ale_arg3)) }) }) } }
-//@type action
-fn blockflow_selfIntrinsHeight ( _ale_arg0: LengthOrPercentageOrAuto) -> Au { specOrZero(_ale_arg0, Au(0)) }
-//@type action
-fn blockflow_pl ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentage) -> Au { specified(_ale_arg0, _ale_arg1) }
-//@type action
-fn blockflow_mbpHoriz ( _ale_arg1: Au,  _ale_arg4: Au,  _ale_arg2: Au,  _ale_arg5: Au,  _ale_arg0: Au,  _ale_arg3: Au) -> Au { _ale_arg0 + _ale_arg1 + _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 }
-//@type action
-fn blockflow_flowHeight ( _ale_arg2: Au,  _ale_arg1: Au,  _ale_arg3: Au,  _ale_arg0: Au,  _ale_arg4: Au,  _ale_arg5: Au) -> Au { if ((_ale_arg0 == Au(0))) { _ale_arg1 + _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 } else { _ale_arg0 + _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 } }
-//@type action
-fn blockflow_mt ( _ale_arg1: Au,  _ale_arg0: LengthOrPercentageOrAuto) -> Au { if (isAuto(_ale_arg0)) { Au(0) } else { specOrZero(_ale_arg0, _ale_arg1) } }
-//@type action
-fn blockflow_mbpVert ( _ale_arg3: Au,  _ale_arg0: Au,  _ale_arg1: Au,  _ale_arg2: Au,  _ale_arg5: Au,  _ale_arg4: Au) -> Au { _ale_arg0 + _ale_arg1 + _ale_arg2 + _ale_arg3 + _ale_arg4 + _ale_arg5 }
-//@type action
-fn blockflow_computedWidth ( _ale_arg0: bool,  _ale_arg3: Au,  _ale_arg2: LengthOrPercentageOrAuto,  _ale_arg4: Au,  _ale_arg5: Au,  _ale_arg1: Au) -> Au { if (_ale_arg0) { _ale_arg1 } else { (if (isAuto(_ale_arg2)) { _ale_arg3 - _ale_arg4 } else { _ale_arg5 }) } }
-//@type action
-fn blockflow_flowY ( _ale_arg0: Au,  _ale_arg1: Au) -> Au { _ale_arg0 + _ale_arg1 }
-//@type action
-fn blockflow_totalWidth ( _ale_arg0: Au,  _ale_arg2: Au,  _ale_arg1: Au) -> Au { _ale_arg0 + _ale_arg1 + _ale_arg2 }
-impl FtlNode for TableColGroupFlow {
- fn with_all_children(&mut self, func: |&mut FtlNode|) {
- }
- fn visit_0(&mut self) {
-  debug!("FTL:   visit  TableColGroupFlow {}", "0");
-  self.base.position.size.height = (tablecolgroupflow_flowHeight());
-  debug!("FTL:     tablecolgroupflow_flowHeight {}", self.base.position.size.height);
-  self.base.position.size.width = (tablecolgroupflow_flowWidth());
-  debug!("FTL:     tablecolgroupflow_flowWidth {}", self.base.position.size.width);
-  self.base.position.origin.x = (tablecolgroupflow_flowX());
-  debug!("FTL:     tablecolgroupflow_flowX {}", self.base.position.origin.x);
-  self.base.position.origin.y = (tablecolgroupflow_flowY());
-  debug!("FTL:     tablecolgroupflow_flowY {}", self.base.position.origin.y);
-  self.base.ftl_attrs.totalheight = (tablecolgroupflow_totalHeight());
-  debug!("FTL:     tablecolgroupflow_totalHeight {}", self.base.ftl_attrs.totalheight);
-  self.base.ftl_attrs.totalwidth = (tablecolgroupflow_totalWidth());
-  debug!("FTL:     tablecolgroupflow_totalWidth {}", self.base.ftl_attrs.totalwidth);
- 
- }
- fn visit_1(&mut self) {
-  debug!("FTL:   visit  TableColGroupFlow {}", "1");
- 
- }
- fn visit_2(&mut self) {
-  debug!("FTL:   visit  TableColGroupFlow {}", "2");
- 
- }
- fn visit_3(&mut self) {
-  debug!("FTL:   visit  TableColGroupFlow {}", "3");
- 
- }
-}
-
 impl FtlNode for InlineFlow {
  fn with_all_children(&mut self, func: |&mut FtlNode|) {
   for child in self.fragments.fragments.mut_iter() {
-//    func(as_ftl_node(child));
+    // func(as_ftl_node(child));
   }
  }
  fn visit_0(&mut self) {
@@ -300,19 +262,19 @@ impl FtlNode for InlineFlow {
   let mut first = true;
   loop {
     let child = match children.split_to_width((if first { text_availabletextwidth_init } else { old_child.get_ref().ftl_attrs.availabletextwidth }), (if first { text_endofline_init } else { old_child.get_ref().ftl_attrs.endofline })) { None => {break;} Some(c) => {c} };
-      child.ftl_attrs.availabletextwidth = ((if (((if first { text_endofline_init } else { old_child.get_ref().ftl_attrs.endofline }))) { ((if first { text_availabletextwidth_init } else { old_child.get_ref().ftl_attrs.availabletextwidth }) - child.border_box.get().size.width) } else { (self.base.ftl_attrs.availablewidth) }));
+      child.ftl_attrs.availabletextwidth = ((if (((if first { text_endofline_init } else { old_child.get_ref().ftl_attrs.endofline }))) { ((if first { text_availabletextwidth_init } else { old_child.get_ref().ftl_attrs.availabletextwidth }) - child.border_box.size.width) } else { (self.base.ftl_attrs.availablewidth) }));
       text_availabletextwidth_last = child.ftl_attrs.availabletextwidth;
       debug!("FTL:          step text@availableTextWidth {}", child.ftl_attrs.availabletextwidth);
       child.ftl_attrs.baseline = ((if ((if first { text_endofline_init } else { old_child.get_ref().ftl_attrs.endofline })) { Au(0) } else { max((if first { text_baseline_init } else { old_child.get_ref().ftl_attrs.baseline }), child.get_ascent()) }));
       text_baseline_last = child.ftl_attrs.baseline;
       debug!("FTL:          step text@baseline {}", child.ftl_attrs.baseline);
-      child.ftl_attrs.endofline = (((child.border_box.get().size.width > (if first { text_availabletextwidth_init } else { old_child.get_ref().ftl_attrs.availabletextwidth }))));
+      child.ftl_attrs.endofline = (((child.border_box.size.width > (if first { text_availabletextwidth_init } else { old_child.get_ref().ftl_attrs.availabletextwidth }))));
       text_endofline_last = child.ftl_attrs.endofline;
       debug!("FTL:          step text@endOfLine {}", child.ftl_attrs.endofline);
     first = false;
     old_child = Some(child);
   }
-self.end_iter(children);
+self.fragments.end_iter(children);
   }
 
 
@@ -325,7 +287,7 @@ self.end_iter(children);
   let mut children = self.fragments.fragments.mut_iter();
   let mut first = true;
   loop {
-    let child = match children.reverse() { None => {break;} Some(c) => {c} };
+    let child = match children.next() { None => {break;} Some(c) => {c} };
       child.ftl_attrs.baselinefinal = ((if (child.ftl_attrs.endofline) { child.ftl_attrs.baseline } else { (if first { text_baselinefinal_init } else { old_child.get_ref().ftl_attrs.baselinefinal }) }));
       text_baselinefinal_last = child.ftl_attrs.baselinefinal;
       debug!("FTL:          step text@baselineFinal {}", child.ftl_attrs.baselinefinal);
@@ -360,7 +322,7 @@ self.end_iter(children);
       child.ftl_attrs.lineposy = ((if ((if first { text_endofline_init } else { old_child.get_ref().ftl_attrs.endofline })) { ((if first { text_lineposy_init } else { old_child.get_ref().ftl_attrs.lineposy }) + (if first { text_lineheight_init } else { old_child.get_ref().ftl_attrs.lineheight })) } else { (if first { text_lineposy_init } else { old_child.get_ref().ftl_attrs.lineposy }) }));
       text_lineposy_last = child.ftl_attrs.lineposy;
       debug!("FTL:          step text@linePosY {}", child.ftl_attrs.lineposy);
-      child.ftl_attrs.right = ((if ((if first { text_endofline_init } else { old_child.get_ref().ftl_attrs.endofline })) { child.border_box.get().size.width } else { (if first { text_right_init } else { old_child.get_ref().ftl_attrs.right }) + child.border_box.get().size.width }));
+      child.ftl_attrs.right = ((if ((if first { text_endofline_init } else { old_child.get_ref().ftl_attrs.endofline })) { child.border_box.size.width } else { (if first { text_right_init } else { old_child.get_ref().ftl_attrs.right }) + child.border_box.size.width }));
       text_right_last = child.ftl_attrs.right;
       debug!("FTL:          step text@right {}", child.ftl_attrs.right);
     first = false;
@@ -380,7 +342,7 @@ self.end_iter(children);
   let mut first = true;
   loop {
     let child = match children.next() { None => {break;} Some(c) => {c} };
-      child.ftl_attrs.posx = ((child.ftl_attrs.right - child.border_box.get().size.width ));
+      child.ftl_attrs.posx = ((child.ftl_attrs.right - child.border_box.size.width ));
       text_posx_last = child.ftl_attrs.posx;
       debug!("FTL:          step text@posX {}", child.ftl_attrs.posx);
     first = false;
@@ -409,19 +371,51 @@ self.end_iter(children);
 
   }
 
- 
+
  }
  fn visit_1(&mut self) {
   debug!("FTL:   visit  InlineFlow {}", "1");
- 
+
  }
  fn visit_2(&mut self) {
   debug!("FTL:   visit  InlineFlow {}", "2");
- 
+
  }
  fn visit_3(&mut self) {
   debug!("FTL:   visit  InlineFlow {}", "3");
- 
+
+ }
+}
+impl FtlNode for TableColGroupFlow {
+ fn with_all_children(&mut self, func: |&mut FtlNode|) {
+ }
+ fn visit_0(&mut self) {
+  debug!("FTL:   visit  TableColGroupFlow {}", "0");
+  self.base.position.size.height = (tablecolgroupflow_flowHeight());
+  debug!("FTL:     tablecolgroupflow_flowHeight {}", self.base.position.size.height);
+  self.base.position.size.width = (tablecolgroupflow_flowWidth());
+  debug!("FTL:     tablecolgroupflow_flowWidth {}", self.base.position.size.width);
+  self.base.position.origin.x = (tablecolgroupflow_flowX());
+  debug!("FTL:     tablecolgroupflow_flowX {}", self.base.position.origin.x);
+  self.base.position.origin.y = (tablecolgroupflow_flowY());
+  debug!("FTL:     tablecolgroupflow_flowY {}", self.base.position.origin.y);
+  self.base.ftl_attrs.totalheight = (tablecolgroupflow_totalHeight());
+  debug!("FTL:     tablecolgroupflow_totalHeight {}", self.base.ftl_attrs.totalheight);
+  self.base.ftl_attrs.totalwidth = (tablecolgroupflow_totalWidth());
+  debug!("FTL:     tablecolgroupflow_totalWidth {}", self.base.ftl_attrs.totalwidth);
+
+ }
+ fn visit_1(&mut self) {
+  debug!("FTL:   visit  TableColGroupFlow {}", "1");
+
+ }
+ fn visit_2(&mut self) {
+  debug!("FTL:   visit  TableColGroupFlow {}", "2");
+
+ }
+ fn visit_3(&mut self) {
+  debug!("FTL:   visit  TableColGroupFlow {}", "3");
+
  }
 }
 impl FtlNode for BlockFlow {
@@ -440,7 +434,6 @@ impl FtlNode for BlockFlow {
   debug!("FTL:     blockflow_br {}", self.ftl_attrs.br);
   self.ftl_attrs.bt = (blockflow_bt(self.fragment.style().get_border().border_top_width));
   debug!("FTL:     blockflow_bt {}", self.ftl_attrs.bt);
-  self.base.display_list = (blockflow_display_list());
   self.ftl_attrs.mb = (blockflow_mb(self.fragment.style().get_margin().margin_bottom, self.base.ftl_attrs.availablewidth));
   debug!("FTL:     blockflow_mb {}", self.ftl_attrs.mb);
   debug!("FTL:         availableWidth {}", self.base.ftl_attrs.availablewidth);
@@ -537,7 +530,7 @@ impl FtlNode for BlockFlow {
 
   }
 
- 
+
  }
  fn visit_1(&mut self) {
   debug!("FTL:   visit  BlockFlow {}", "1");
@@ -633,20 +626,11 @@ impl FtlNode for BlockFlow {
   debug!("FTL:         flowHeight {}", self.base.position.size.height);
   debug!("FTL:         mt {}", self.ftl_attrs.mt);
   debug!("FTL:         mb {}", self.ftl_attrs.mb);
- 
+
  }
  fn visit_2(&mut self) {
   debug!("FTL:   visit  BlockFlow {}", "2");
-  self.base.position.origin.x = (blockflow_flowX(self.base.ftl_attrs.containingx, self.ftl_attrs.ml));
-  debug!("FTL:     blockflow_flowX {}", self.base.position.origin.x);
-  debug!("FTL:         containingX {}", self.base.ftl_attrs.containingx);
-  debug!("FTL:         ml {}", self.ftl_attrs.ml);
-  self.base.position.origin.y = (blockflow_flowY(self.base.ftl_attrs.containingy, self.ftl_attrs.mt));
-  debug!("FTL:     blockflow_flowY {}", self.base.position.origin.y);
-  debug!("FTL:         containingY {}", self.base.ftl_attrs.containingy);
-  debug!("FTL:         mt {}", self.ftl_attrs.mt);
-  self.base.ftl_attrs.render = (blockflow_render(self.base.position.size.height, self.base.position.size.width, self.ftl_attrs.bl, self.ftl_attrs.mt, self.base.ftl_attrs.absy, self.base.ftl_attrs.absx, self.ftl_attrs.bb, self.ftl_attrs.br, self.ftl_attrs.ml, &mut self.fragment, self.ftl_attrs.bt, &mut self.base.display_list));
-  debug!("FTL:     blockflow_render {}", self.base.ftl_attrs.render);
+  self.base.display_list = (blockflow_display_list(self.base.position.size.height, self.base.position.size.width, self.ftl_attrs.bl, self.ftl_attrs.mt, self.base.ftl_attrs.absy, self.base.ftl_attrs.absx, self.ftl_attrs.bb, self.ftl_attrs.br, self.ftl_attrs.ml, &mut self.fragment, self.ftl_attrs.bt));
   debug!("FTL:         flowHeight {}", self.base.position.size.height);
   debug!("FTL:         flowWidth {}", self.base.position.size.width);
   debug!("FTL:         bl {}", self.ftl_attrs.bl);
@@ -657,6 +641,14 @@ impl FtlNode for BlockFlow {
   debug!("FTL:         br {}", self.ftl_attrs.br);
   debug!("FTL:         ml {}", self.ftl_attrs.ml);
   debug!("FTL:         bt {}", self.ftl_attrs.bt);
+  self.base.position.origin.x = (blockflow_flowX(self.base.ftl_attrs.containingx, self.ftl_attrs.ml));
+  debug!("FTL:     blockflow_flowX {}", self.base.position.origin.x);
+  debug!("FTL:         containingX {}", self.base.ftl_attrs.containingx);
+  debug!("FTL:         ml {}", self.ftl_attrs.ml);
+  self.base.position.origin.y = (blockflow_flowY(self.base.ftl_attrs.containingy, self.ftl_attrs.mt));
+  debug!("FTL:     blockflow_flowY {}", self.base.position.origin.y);
+  debug!("FTL:         containingY {}", self.base.ftl_attrs.containingy);
+  debug!("FTL:         mt {}", self.ftl_attrs.mt);
 
   let flowchildren_absx_init = ((Au(0)));
   let mut flowchildren_absx_last = (flowchildren_absx_init);
@@ -684,7 +676,7 @@ impl FtlNode for BlockFlow {
 
   }
 
- 
+
  }
  fn visit_3(&mut self) {
   debug!("FTL:   visit  BlockFlow {}", "3");
@@ -712,7 +704,7 @@ impl FtlNode for BlockFlow {
   let mut first = true;
   loop {
     let child = match children.next() { None => {break;} Some(c) => {c} };
-      self.base.ftl_attrs.makelists = ((mergeLists(&mut self.base.display_list, &mut child.display_list) + child.ftl_attrs.render ));
+      self.base.ftl_attrs.makelists = ((merge_lists(&mut self.base.display_list, &mut child.display_list)));
       debug!("FTL:          step makeLists {}", self.base.ftl_attrs.makelists);
     first = false;
     old_child = Some(child);
@@ -720,7 +712,7 @@ impl FtlNode for BlockFlow {
 
   }
 
- 
+
  }
 }
 pub fn layout (root: &mut FtlNode) {
