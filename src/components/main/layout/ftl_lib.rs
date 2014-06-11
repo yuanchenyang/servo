@@ -20,7 +20,8 @@ use style::computed_values::{LengthOrPercentageOrAuto, LPA_Auto};
 use gfx::display_list::{DisplayList, BaseDisplayItem,
                         BorderDisplayItem, BorderDisplayItemClass};
 use gfx::display_list::{SolidColorDisplayItem, SolidColorDisplayItemClass,
-                        BackgroundAndBordersStackingLevel};
+                        BackgroundAndBordersStackingLevel, ContentStackingLevel};
+use gfx::display_list::{TextDecorations, TextDisplayItem, TextDisplayItemClass};
 
 // The root of the DOM tree, used by FTL
 // pub struct RootFlow {
@@ -72,14 +73,12 @@ pub fn is_auto(length : LengthOrPercentageOrAuto) -> bool {
         LPA_Auto => true,
         _ => false
     }
-
 }
 
 pub fn max (a : Au, b : Au) -> Au {
-    if (a > b) {
-        a
-    } else {
-        b
+    match (a > b) {
+        true  => a,
+        false => b,
     }
 }
 
@@ -139,6 +138,42 @@ pub fn add_background(list: DisplayList, frag: &Fragment,
         list.push(SolidColorDisplayItemClass(solid_color_display_item));
     }
     list
+}
+
+pub fn add_text_fragment(list: &mut DisplayList, frag: &Fragment,
+                         x: Au, y: Au, width: Au, height: Au) -> int{
+    match frag.specific {
+        ScannedTextFragment(ref text_fragment) => {
+            // Compute text color.
+            let text_color = frag.style().get_color().color.to_gfx_color();
+
+            // Compute text decorations.
+            let text_decorations_in_effect = frag.style()
+                .get_inheritedtext()
+                ._servo_text_decorations_in_effect;
+
+            let text_decorations = TextDecorations {
+                underline: text_decorations_in_effect.underline.map(|c| c.to_gfx_color()),
+                overline: text_decorations_in_effect.overline.map(|c| c.to_gfx_color()),
+                line_through: text_decorations_in_effect.line_through
+                    .map(|c| c.to_gfx_color()),
+            };
+
+            let mut bounds = make_rect(x, y, width, height);
+
+            // Create the text fragment.
+            let text_display_item = box TextDisplayItem {
+                base: BaseDisplayItem::new(bounds, frag.node, ContentStackingLevel),
+                text_run: text_fragment.run.clone(),
+                range: text_fragment.range,
+                text_color: text_color,
+                text_decorations: text_decorations,
+            };
+            list.push(TextDisplayItemClass(text_display_item));
+        },
+        _ => fail!("Each fragment in inline flow should be a ScannedTextFragment?"),
+    }
+    1
 }
 
 pub fn rect_height(rect: Rect<Au>) -> Au {
@@ -268,6 +303,6 @@ impl LineMetrics for Fragment {
         Au(0)
     }
     fn get_lineheight(&mut self) -> Au {
-        Au(0)
+        self.border_box.size.height
     }
 }
