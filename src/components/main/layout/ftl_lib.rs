@@ -198,7 +198,7 @@ pub fn add_text_fragment(list: FTLDisplayList,
 
             let mut bounds = make_rect(x, y, width, height);
 
-            debug!("{}", text_fragment.range);
+            //debug!("{}", text_fragment.range);
 
             // Create the text fragment.
             let text_display_item = box TextDisplayItem {
@@ -286,7 +286,10 @@ impl Spliterator {
     pub fn split_to_width(&mut self, remaining_width: Au, starts_line: bool) -> Option<&mut Fragment> {
         let cur_fragment = if self.work_list.is_empty() {
             match self.items.next() {
-                None => {return None;},
+                None => {
+                    debug!("split_to_width: no text left to split");
+                    return None;
+                },
                 Some(fragment) => {
                     fragment
                 }
@@ -298,6 +301,7 @@ impl Spliterator {
 
         let split = cur_fragment.find_split_info_for_width(CharIndex(0), remaining_width, starts_line);
 
+        let mut has_rest = false;
         let ret = match split.map(|(left, right, run)| {
             let split_fragment = |split: SplitInfo| {
                 let info = ScannedTextFragmentInfo::new(run.clone(), split.range);
@@ -306,22 +310,30 @@ impl Spliterator {
                 cur_fragment.transform(size, specific)
             };
 
-            (left.map(|x| { debug!("LineBreaker: Left split {}", x); split_fragment(x) }),
-             right.map(|x| { debug!("LineBreaker: Right split {}", x); split_fragment(x) }))
+            (left.map(|x| { split_fragment(x) }),
+             right.map(|x| { split_fragment(x) }))
         }) {
-            None => Some(cur_fragment),
+            None => {
+                debug!("split_to_width: could not split fragment");
+                Some(cur_fragment)
+            },
             Some((left,right)) => {
                 match right {
                     None => {},
-                    Some(frag) => { self.work_list.push_front(frag); }
+                    Some(frag) => { has_rest = true; self.work_list.push_front(frag); }
                 }
                 left
             }
         };
 
         match ret {
-            None => self.split_to_width(remaining_width, starts_line),
-            Some(x) => {
+            None => { 
+                debug!("split_to_width: no left fragment; recurring");
+                self.split_to_width(remaining_width, starts_line)
+            },
+            Some(mut x) => {
+                debug!("split_to_width: returning left fragment");
+                x.ftl_attrs.mustendline = has_rest;
                 self.leftover.push(x);
                 unsafe { Some(cast::transmute_mut_lifetime(self.leftover.mut_last().unwrap())) }
             }
@@ -337,7 +349,7 @@ pub trait LineMetrics {
 
 impl LineMetrics for Fragment {
     fn get_ascent(&mut self) -> Au {
-        Au(0)
+        self.inline_metrics().ascent
     }
     fn get_descent(&mut self) -> Au {
         Au(0)
