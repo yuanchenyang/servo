@@ -88,20 +88,45 @@ pub fn max (a : Au, b : Au) -> Au {
     }
 }
 
-pub fn new_display_list() -> DisplayList {
+pub fn new_display_list() -> FTLDisplayList {
+    Some(DisplayList::new())
+}
+pub fn empty_display_list() -> DisplayList {
     DisplayList::new()
 }
 
-pub fn merge_lists(parent: &mut DisplayList,
+pub fn to_display_list(list: FTLDisplayList) -> DisplayList {
+    list.unwrap()
+}
+
+/*pub fn merge_lists(parent: &mut DisplayList,
                   child:  &mut DisplayList) -> int {
     parent.push_all_move(mem::replace(child, DisplayList::new()));
     1
+}*/
+
+pub trait Optionable {
+    fn to_option(self) -> Option<Self>;
 }
 
-pub fn add_border(list: DisplayList, frag: &Fragment,
-                 x: Au, y: Au, width: Au, height: Au,
-                 t: Au, r: Au, b: Au, l: Au) -> DisplayList {
+impl Optionable for DisplayList {
+    fn to_option(self) -> Option<DisplayList> {
+        Some(self)
+    }
+}
 
+pub type FTLDisplayList = Option<DisplayList>;
+pub fn merge_lists(one: FTLDisplayList, two: FTLDisplayList) -> FTLDisplayList {
+    let mut ret = one.unwrap();
+    ret.push_all_move(two.unwrap());
+    Some(ret)
+}
+
+pub fn add_border(list: FTLDisplayList, frag: &Fragment,
+                 x: Au, y: Au, width: Au, height: Au,
+                 t: Au, r: Au, b: Au, l: Au) -> FTLDisplayList {
+
+    let list = list.unwrap();
     let style = frag.style();
 
     let top_color = style.resolve_color(style.get_border().border_top_color);
@@ -126,11 +151,12 @@ pub fn add_border(list: DisplayList, frag: &Fragment,
     };
     let mut list = list;
     list.push(BorderDisplayItemClass(border_display_item));
-    list
+    Some(list)
 }
 
-pub fn add_background(list: DisplayList, frag: &Fragment,
-                     x: Au, y: Au, width: Au, height: Au) -> DisplayList {
+pub fn add_background(list: FTLDisplayList, frag: &Fragment,
+                     x: Au, y: Au, width: Au, height: Au) -> FTLDisplayList {
+    let list = list.unwrap();
     let style = frag.style();
     let background_color = style.resolve_color(style.get_background().background_color);
     let mut list = list;
@@ -143,15 +169,16 @@ pub fn add_background(list: DisplayList, frag: &Fragment,
         };
         list.push(SolidColorDisplayItemClass(solid_color_display_item));
     }
-    list
+    Some(list)
 }
 
-pub fn add_text_fragment(list: &mut DisplayList,
+pub fn add_text_fragment(list: FTLDisplayList,
                          specific: SpecificFragmentInfo,
                          style: Arc<ComputedValues>,
                          node: OpaqueNode,
-                         x: Au, y: Au, width: Au, height: Au) -> int{
+                         x: Au, y: Au, width: Au, height: Au) -> FTLDisplayList {
     let style = style.deref();
+    let mut list = list.unwrap();
     match specific {
         ScannedTextFragment(ref text_fragment) => {
             // Compute text color.
@@ -186,7 +213,7 @@ pub fn add_text_fragment(list: &mut DisplayList,
         // fail!("Each fragment in inline flow should be a ScannedTextFragment?")
         _ => {},
     }
-    1
+    Some(list)
 }
 
 pub fn rect_height(rect: Rect<Au>) -> Au {

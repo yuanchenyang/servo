@@ -700,8 +700,7 @@ impl LayoutTask {
 
         let mut color = color::rgba(255.0, 255.0, 255.0, 255.0);
 
-        let mut lists = mem::replace(&mut flow::mut_base(layout_root).display_list,
-                                      DisplayList::new());
+        let mut lists = flow::mut_base(layout_root).ftl_attrs.display_list.take_unwrap();
 
         let display_list = Arc::new(lists.flatten(ContentStackingLevel));
         let root_size = flow::base(layout_root).position.size;
