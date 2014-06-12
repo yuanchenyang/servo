@@ -3,7 +3,8 @@ use std::mem;
 use std::vec::MoveItems;
 use layout;
 use layout::model::MaybeAuto::;
-use layout::fragment::{Fragment, SplitInfo, ScannedTextFragmentInfo,ScannedTextFragment};
+use layout::fragment::{Fragment, SplitInfo, ScannedTextFragmentInfo,
+                       ScannedTextFragment};
 use layout::inline::InlineFragments;
 use collections::{Deque, RingBuf};
 use layout::flow::{Flow, BlockFlowClass,InlineFlowClass,TableWrapperFlowClass,
@@ -22,6 +23,11 @@ use gfx::display_list::{DisplayList, BaseDisplayItem,
 use gfx::display_list::{SolidColorDisplayItem, SolidColorDisplayItemClass,
                         BackgroundAndBordersStackingLevel, ContentStackingLevel};
 use gfx::display_list::{TextDecorations, TextDisplayItem, TextDisplayItemClass};
+
+use gfx::display_list::OpaqueNode;
+use layout::fragment::SpecificFragmentInfo;
+use style::ComputedValues;
+use sync::Arc;
 
 // The root of the DOM tree, used by FTL
 // pub struct RootFlow {
@@ -140,15 +146,19 @@ pub fn add_background(list: DisplayList, frag: &Fragment,
     list
 }
 
-pub fn add_text_fragment(list: &mut DisplayList, frag: &Fragment,
+pub fn add_text_fragment(list: &mut DisplayList,
+                         specific: SpecificFragmentInfo,
+                         style: Arc<ComputedValues>,
+                         node: OpaqueNode,
                          x: Au, y: Au, width: Au, height: Au) -> int{
-    match frag.specific {
+    let style = style.deref();
+    match specific {
         ScannedTextFragment(ref text_fragment) => {
             // Compute text color.
-            let text_color = frag.style().get_color().color.to_gfx_color();
+            let text_color = style.get_color().color.to_gfx_color();
 
             // Compute text decorations.
-            let text_decorations_in_effect = frag.style()
+            let text_decorations_in_effect = style
                 .get_inheritedtext()
                 ._servo_text_decorations_in_effect;
 
@@ -161,9 +171,11 @@ pub fn add_text_fragment(list: &mut DisplayList, frag: &Fragment,
 
             let mut bounds = make_rect(x, y, width, height);
 
+            debug!("{}", text_fragment.range);
+
             // Create the text fragment.
             let text_display_item = box TextDisplayItem {
-                base: BaseDisplayItem::new(bounds, frag.node, ContentStackingLevel),
+                base: BaseDisplayItem::new(bounds, node, ContentStackingLevel),
                 text_run: text_fragment.run.clone(),
                 range: text_fragment.range,
                 text_color: text_color,
@@ -171,7 +183,8 @@ pub fn add_text_fragment(list: &mut DisplayList, frag: &Fragment,
             };
             list.push(TextDisplayItemClass(text_display_item));
         },
-        _ => fail!("Each fragment in inline flow should be a ScannedTextFragment?"),
+        // fail!("Each fragment in inline flow should be a ScannedTextFragment?")
+        _ => {},
     }
     1
 }
@@ -199,7 +212,7 @@ pub fn synthesize(visit: |&mut layout::ftl_layout::FtlNode|,node: &mut layout::f
 }
 
 pub fn log(logstr: &str){
-    println!("{:s}",logstr)
+    debug!("{:s}",logstr)
 }
 
 pub fn as_ftl_node<'a>(flow: &'a mut Flow) -> &'a mut layout::ftl_layout::FtlNode {
